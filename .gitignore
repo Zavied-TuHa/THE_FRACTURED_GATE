@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local save files & backups
+saves/
+*.save.json
+*.save.bak
+
+# IDE / VS Code
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
