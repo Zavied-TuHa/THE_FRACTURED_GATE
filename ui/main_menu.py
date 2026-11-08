@@ -25,7 +25,7 @@ class MainMenuScreen:
 
     def __init__(self) -> None:
         self.options: list[str] = [
-            "Enter the Gate (Start Run)",
+            "Enter the Sanctum Hub (Start)",
             "Quit to Desktop",
         ]
         self.selected_index: int = 0
@@ -38,7 +38,7 @@ class MainMenuScreen:
             self.selected_index = (self.selected_index + 1) % len(self.options)
         elif key in (pygame.K_RETURN, pygame.K_SPACE):
             if self.selected_index == 0:
-                return "character_selection"
+                return "hub_room"
             return "quit"
         return None
 

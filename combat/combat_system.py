@@ -50,6 +50,7 @@ class CombatSystem:
                     owner_is_player=True,
                     color=player.stats.color,
                     room_id=player.current_room_id,
+                    room_bounds=player.current_room_bounds,
                 )
             )
         else:
@@ -132,6 +133,7 @@ class CombatSystem:
                             owner_is_player=True,
                             color=(110, 190, 255),
                             room_id=player.current_room_id,
+                            room_bounds=player.current_room_bounds,
                         )
                     )
             else:
@@ -168,6 +170,7 @@ class CombatSystem:
                             owner_is_player=True,
                             color=(130, 240, 150),
                             room_id=player.current_room_id,
+                            room_bounds=player.current_room_bounds,
                         )
                     )
             else:
@@ -185,6 +188,7 @@ class CombatSystem:
                             owner_is_player=True,
                             color=(160, 255, 180),
                             room_id=player.current_room_id,
+                            room_bounds=player.current_room_bounds,
                         )
                     )
                 player.dash_cooldown_timer = 0.0
@@ -211,7 +215,7 @@ class CombatSystem:
                 for enemy in enemies:
                     if not enemy.alive or enemy.entity_id in arc.hit_entity_ids:
                         continue
-                    if arc.room_id is not None and arc.room_id != enemy.room_id:
+                    if arc.room_id is None or arc.room_id != enemy.room_id:
                         continue
                     if arc.contains_point(enemy.x, enemy.y, entity_radius=enemy.radius):
                         arc.hit_entity_ids.add(enemy.entity_id)
@@ -234,9 +238,9 @@ class CombatSystem:
                             killed_enemies.append(enemy)
             else:
                 same_room = (
-                    arc.room_id is None
-                    or player.current_room_id is None
-                    or arc.room_id == player.current_room_id
+                    arc.room_id is not None
+                    and player.current_room_id is not None
+                    and arc.room_id == player.current_room_id
                 )
                 if (
                     same_room
@@ -276,7 +280,7 @@ class CombatSystem:
                 for enemy in enemies:
                     if not enemy.alive:
                         continue
-                    if proj.room_id is not None and proj.room_id != enemy.room_id:
+                    if proj.room_id is None or proj.room_id != enemy.room_id:
                         continue
                     if math.hypot(enemy.x - proj.x, enemy.y - proj.y) <= (
                         enemy.radius + proj.radius
@@ -302,9 +306,9 @@ class CombatSystem:
                         break
             else:
                 same_room = (
-                    proj.room_id is None
-                    or player.current_room_id is None
-                    or proj.room_id == player.current_room_id
+                    proj.room_id is not None
+                    and player.current_room_id is not None
+                    and proj.room_id == player.current_room_id
                 )
                 if (
                     same_room

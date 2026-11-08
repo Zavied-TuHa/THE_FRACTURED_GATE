@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pygame
 
+from config.balance import TOTAL_SHRINES_PER_RUN, TOTAL_STAGES_PER_RUN
 from config.settings import (
     COLOR_TREASURE_CHEST,
     COLOR_UI_BG,
@@ -20,22 +21,51 @@ from systems.run_manager import RunManager
 
 
 class PauseMenuOverlay:
-    """Modal Pause Menu overlay rendered over gameplay."""
+    """Modal Pause Menu overlay rendered over gameplay with Quit Run confirmation."""
 
     def __init__(self) -> None:
         self.options: list[str] = [
             "Resume Run",
-            "Quit Run to Character Selection",
-            "Quit Run to Main Menu",
+            "Quit Run (Return to Hub Room)",
+            "Return to Main Menu",
+        ]
+        self.confirm_options: list[str] = [
+            "Confirm Quit Run -> Hub Room",
+            "Cancel (Keep Playing)",
         ]
         self.selected_index: int = 0
+        self.confirming_quit: bool = False
+        self.confirm_selected_index: int = 0
 
     def reset(self) -> None:
-        """Reset pause menu selection to 'Resume Run' when opened."""
+        """Reset pause menu selection and confirmation state when opened."""
         self.selected_index = 0
+        self.confirming_quit = False
+        self.confirm_selected_index = 0
 
     def handle_keydown(self, key: int) -> str | None:
-        """Process pause menu navigation, separating Resume from Quit flows."""
+        """Process pause menu navigation, separating Resume from confirmed Quit Run -> Hub."""
+        if self.confirming_quit:
+            if key == pygame.K_ESCAPE:
+                self.confirming_quit = False
+                self.confirm_selected_index = 0
+                return None
+            if key in (pygame.K_UP, pygame.K_w):
+                self.confirm_selected_index = (
+                    self.confirm_selected_index - 1
+                ) % len(self.confirm_options)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.confirm_selected_index = (
+                    self.confirm_selected_index + 1
+                ) % len(self.confirm_options)
+            elif key in (pygame.K_RETURN, pygame.K_SPACE):
+                if self.confirm_selected_index == 0:
+                    self.confirming_quit = False
+                    return "confirm_quit_to_hub"
+                self.confirming_quit = False
+                return "resume"
+            return None
+
         if key == pygame.K_ESCAPE:
             return "resume"
         if key in (pygame.K_UP, pygame.K_w):
@@ -46,7 +76,9 @@ class PauseMenuOverlay:
             if self.selected_index == 0:
                 return "resume"
             if self.selected_index == 1:
-                return "pause_quit_character_selection"
+                self.confirming_quit = True
+                self.confirm_selected_index = 0
+                return "awaiting_quit_confirmation"
             return "pause_quit_main_menu"
         return None
 
@@ -56,14 +88,31 @@ class PauseMenuOverlay:
         title_font: pygame.font.Font,
         body_font: pygame.font.Font,
     ) -> None:
-        """Render semi-transparent backdrop and pause menu panel."""
+        """Render semi-transparent backdrop and pause menu (or quit confirmation) panel."""
         overlay = pygame.Surface((INTERNAL_WIDTH, INTERNAL_HEIGHT), pygame.SRCALPHA)
         overlay.fill((8, 6, 12, 185))
         surface.blit(overlay, (0, 0))
 
-        panel = pygame.Rect(INTERNAL_WIDTH // 2 - 140, 86, 280, 188)
+        panel = pygame.Rect(INTERNAL_WIDTH // 2 - 150, 82, 300, 196)
         pygame.draw.rect(surface, COLOR_UI_PANEL, panel)
         pygame.draw.rect(surface, COLOR_UI_BORDER, panel, 2)
+
+        if self.confirming_quit:
+            t_surf = title_font.render("ABANDON CURRENT RUN?", False, (235, 95, 95))
+            surface.blit(
+                t_surf,
+                (panel.centerx - t_surf.get_width() // 2, panel.y + 18),
+            )
+            for idx, opt in enumerate(self.confirm_options):
+                sel = idx == self.confirm_selected_index
+                col = COLOR_UI_GOLD if sel else COLOR_UI_TEXT
+                prefix = "> " if sel else "  "
+                o_surf = body_font.render(f"{prefix}{opt}", False, col)
+                surface.blit(
+                    o_surf,
+                    (panel.centerx - o_surf.get_width() // 2, panel.y + 78 + idx * 34),
+                )
+            return
 
         t_surf = title_font.render("PAUSED", False, COLOR_UI_GOLD)
         surface.blit(t_surf, (panel.centerx - t_surf.get_width() // 2, panel.y + 18))
@@ -83,7 +132,7 @@ class TreasureRoomScreen:
     """Interactive post-Stage-3 Treasure Room where the player claims the Grand Chest."""
 
     def handle_keydown(self, key: int, run_manager: RunManager) -> str | None:
-        """Press F or Enter to open chest, then Enter/Space to continue."""
+        """Press F or Enter to open chest, then Enter/Space to return to Hub Room."""
         if key == pygame.K_f and not run_manager.treasure_collected:
             run_manager.claim_treasure_chest()
             return None
@@ -91,6 +140,8 @@ class TreasureRoomScreen:
             if not run_manager.treasure_collected:
                 run_manager.claim_treasure_chest()
                 return None
+            return "hub_room"
+        if key == pygame.K_v and run_manager.treasure_collected:
             return "victory"
         return None
 
@@ -140,7 +191,7 @@ class TreasureRoomScreen:
                 (INTERNAL_WIDTH // 2 - reward_msg.get_width() // 2, 184),
             )
             cont_msg = small_font.render(
-                "Press [Enter] or [Space] to Proceed to Victory Summary",
+                "Press [Enter] or [Space] to Return to Hub Room",
                 False,
                 COLOR_UI_GOLD,
             )
@@ -157,9 +208,9 @@ class EndRunScreen:
         self.is_victory: bool = is_victory
 
     def handle_keydown(self, key: int) -> str | None:
-        """Return to Character Selection or Main Menu."""
+        """Return to Hub Room or Main Menu."""
         if key in (pygame.K_RETURN, pygame.K_SPACE):
-            return "character_selection"
+            return "hub_room"
         if key == pygame.K_ESCAPE:
             return "main_menu"
         return None
@@ -189,8 +240,8 @@ class EndRunScreen:
 
         summary_lines = [
             f"Run Seed: {run_manager.run_seed}",
-            f"Stage Reached: Stage {run_manager.current_stage_index} - Substage {run_manager.current_substage_index}",
-            f"Shrines Activated: {run_manager.total_shrines_activated} / 15",
+            f"Stage Reached: Stage {run_manager.current_stage_index}/{TOTAL_STAGES_PER_RUN} - Substage {run_manager.current_substage_index}",
+            f"Shrines Activated: {run_manager.total_shrines_activated} / {TOTAL_SHRINES_PER_RUN}",
             f"Enemies Vanquished: {run_manager.enemies_slain}",
             f"Gold Earned This Run: +{run_manager.run_gold_earned} G",
             f"Blue Crystals Earned This Run: +{run_manager.run_crystals_earned} C",
@@ -203,7 +254,7 @@ class EndRunScreen:
             )
 
         prompt = small_font.render(
-            "[Enter/Space] Return to Character Selection     [Esc] Main Menu",
+            "[Enter/Space] Return to Hub Room     [Esc] Main Menu",
             False,
             COLOR_UI_MUTED,
         )

@@ -119,18 +119,22 @@ class FracturedGateGame:
             ):
                 self._try_player_basic_attack()
 
+    def enter_hub_room(self) -> None:
+        """Transition into the Hub Room state (replaceable interface for Phase 2.3 Hub)."""
+        self.state_manager.transition_to_hub_room()
+
     def _handle_keydown(self, key: int) -> None:
         """Route keydown events according to current GameState."""
         state = self.state_manager.current_state
 
         if state == GameState.MAIN_MENU:
             action = self.main_menu.handle_keydown(key)
-            if action == "character_selection":
-                self.state_manager.change_state(GameState.CHARACTER_SELECTION)
+            if action in ("hub_room", "character_selection"):
+                self.enter_hub_room()
             elif action == "quit":
                 self.running = False
 
-        elif state == GameState.CHARACTER_SELECTION:
+        elif state in (GameState.HUB_ROOM, GameState.CHARACTER_SELECTION):
             action = self.char_select.handle_keydown(key, self.progression)
             if action == "main_menu":
                 self.state_manager.change_state(GameState.MAIN_MENU)
@@ -156,29 +160,31 @@ class FracturedGateGame:
             if action == "resume":
                 # Resume active run without resetting or aborting state
                 self.state_manager.change_state(GameState.GAMEPLAY)
-            elif action in ("pause_quit_character_selection", "character_selection"):
+            elif action == "confirm_quit_to_hub":
                 self.run_manager.abort_run()
-                self.state_manager.change_state(GameState.CHARACTER_SELECTION)
+                self.enter_hub_room()
             elif action in ("pause_quit_main_menu", "main_menu"):
                 self.run_manager.abort_run()
                 self.state_manager.change_state(GameState.MAIN_MENU)
 
         elif state == GameState.TREASURE_ROOM:
             action = self.treasure_screen.handle_keydown(key, self.run_manager)
-            if action == "victory":
+            if action == "hub_room":
+                self.enter_hub_room()
+            elif action == "victory":
                 self.state_manager.change_state(GameState.VICTORY)
 
         elif state == GameState.VICTORY:
             action = self.victory_screen.handle_keydown(key)
-            if action == "character_selection":
-                self.state_manager.change_state(GameState.CHARACTER_SELECTION)
+            if action in ("hub_room", "character_selection"):
+                self.enter_hub_room()
             elif action == "main_menu":
                 self.state_manager.change_state(GameState.MAIN_MENU)
 
         elif state == GameState.GAME_OVER:
             action = self.game_over_screen.handle_keydown(key)
-            if action == "character_selection":
-                self.state_manager.change_state(GameState.CHARACTER_SELECTION)
+            if action in ("hub_room", "character_selection"):
+                self.enter_hub_room()
             elif action == "main_menu":
                 self.state_manager.change_state(GameState.MAIN_MENU)
 
@@ -213,14 +219,15 @@ class FracturedGateGame:
                 )
         elif key == KEY_INTERACT:
             # 1. Check Stage Exit Portal interaction
-            if self.run_manager.portal is not None and self.run_manager.portal.is_player_in_range(
-                player.x, player.y
-            ):
-                next_state = self.run_manager.advance_stage_or_finish()
+            used_portal, next_state = self.run_manager.try_use_stage_portal()
+            if used_portal:
                 if next_state == "treasure_room":
                     self.state_manager.change_state(GameState.TREASURE_ROOM)
-                else:
-                    self.camera.snap_to(player.x, player.y)
+                elif self.run_manager.player is not None:
+                    self.camera.snap_to(
+                        self.run_manager.player.x,
+                        self.run_manager.player.y,
+                    )
                 return
 
             # 2. Check Shrine activation (immediate transition to next Substage or Boss Room)
@@ -287,11 +294,8 @@ class FracturedGateGame:
         move_dx, move_dy = self._read_movement_axes()
         player.update(dt, move_dx, move_dy, dungeon.tilemap)
 
-        # Update player's active room ownership from current tile position
-        current_room = dungeon.get_room_at_tile(*player.tile_pos)
-        player.current_room_id = (
-            current_room.room_id if current_room is not None else None
-        )
+        # Update player's active room ownership and bounds from current tile position
+        self.run_manager.sync_player_room_ownership()
 
         # Update enemies
         for enemy in self.run_manager.enemies:
@@ -339,7 +343,7 @@ class FracturedGateGame:
                 self.small_font,
                 self.progression,
             )
-        elif state == GameState.CHARACTER_SELECTION:
+        elif state in (GameState.HUB_ROOM, GameState.CHARACTER_SELECTION):
             self.char_select.render(
                 self.internal_surface,
                 self.title_font,

@@ -138,12 +138,17 @@ class DungeonGenerator:
         run_seed: int,
         stage_index: int = 1,
         substage_index: int = 1,
+        content_rng_override: random.Random | None = None,
     ) -> GeneratedDungeon:
         """Generate a Revision 2.0 Substage dungeon with 1 Shrine and >= 2 Mandatory Enemy rooms."""
         seeds = SeedHierarchy(run_seed)
         sub_rng = seeds.substage_rng(stage_index, substage_index)
         layout_rng = seeds.layout_rng(stage_index, substage_index)
-        content_rng = seeds.room_content_rng(stage_index, substage_index)
+        content_rng = (
+            content_rng_override
+            if content_rng_override is not None
+            else seeds.room_content_rng(stage_index, substage_index)
+        )
 
         min_r, max_r = SUBSTAGE_ROOM_COUNTS.get(substage_index, (7, 10))
         min_required = 2 + MIN_MANDATORY_ENEMY_ROOMS_PER_SUBSTAGE + 2

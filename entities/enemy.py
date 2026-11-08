@@ -150,7 +150,8 @@ class Enemy:
         dy = player.y - self.y
         dist_to_player = math.hypot(dx, dy)
         same_room = (
-            player.current_room_id is None or player.current_room_id == self.room_id
+            player.current_room_id is not None
+            and player.current_room_id == self.room_id
         )
 
         # AI state selection (strictly isolated by room ownership)

@@ -64,6 +64,8 @@ class RunManager:
         self.stage_shrines_activated: int = 0  # 0..5 within current stage
         self.total_shrines_activated: int = 0  # 0..15 across the entire run
         self.in_boss_room: bool = False
+        self.stage_boss_defeated: bool = False
+        self.boss_arena_initialized_for_stage: int = 0
         self.is_run_active: bool = False
         self.run_outcome: str = "idle"
         self.selected_character_id: str = "warrior"
@@ -109,6 +111,8 @@ class RunManager:
         self.stage_shrines_activated = 0
         self.total_shrines_activated = 0
         self.in_boss_room = False
+        self.stage_boss_defeated = False
+        self.boss_arena_initialized_for_stage = 0
         self.is_run_active = True
         self.run_outcome = "in_progress"
         self.selected_character_id = character_id
@@ -134,11 +138,30 @@ class RunManager:
 
         self._load_substage(self.current_stage_index, self.current_substage_index)
 
+    def sync_player_room_ownership(self) -> int | None:
+        """Update player.current_room_id and player.current_room_bounds from current tile position."""
+        if self.player is None or self.dungeon is None:
+            return None
+        current_room = self.dungeon.get_room_at_tile(*self.player.tile_pos)
+        if current_room is not None:
+            self.player.current_room_id = current_room.room_id
+            self.player.current_room_bounds = (
+                float((current_room.x + 1) * TILE_SIZE),
+                float((current_room.y + 1) * TILE_SIZE),
+                float((current_room.right - 1) * TILE_SIZE),
+                float((current_room.bottom - 1) * TILE_SIZE),
+            )
+        else:
+            self.player.current_room_id = None
+            self.player.current_room_bounds = None
+        return self.player.current_room_id
+
     def _load_substage(self, stage_index: int, substage_index: int) -> None:
         """Generate a substage dungeon, place player at entrance, and spawn its shrine and enemies."""
         self.current_stage_index = stage_index
         self.current_substage_index = substage_index
         self.in_boss_room = False
+        self.stage_boss_defeated = False
 
         biome_id = self.stage_biomes[stage_index - 1]
         self._stage_rng = self.seed_hierarchy.substage_rng(stage_index, substage_index)
@@ -157,7 +180,7 @@ class RunManager:
         ex, ey = self.dungeon.entrance_room.center
         self.player.x = ex * TILE_SIZE + TILE_SIZE * 0.5
         self.player.y = ey * TILE_SIZE + TILE_SIZE * 0.5
-        self.player.current_room_id = self.dungeon.entrance_room.room_id
+        self.sync_player_room_ownership()
 
         # Build the single mandatory Shrine entity for this substage
         shrines: list[Shrine] = []
@@ -202,9 +225,13 @@ class RunManager:
                 f"{REQUIRED_SHRINES_PER_STAGE_V2} Stage Shrines "
                 f"(current: {self.stage_shrines_activated})."
             )
+        if self.in_boss_room and self.boss_arena_initialized_for_stage == stage_index:
+            return
 
         self.current_stage_index = stage_index
         self.in_boss_room = True
+        self.stage_boss_defeated = False
+        self.boss_arena_initialized_for_stage = stage_index
         biome_id = self.stage_biomes[stage_index - 1]
         self._stage_rng = self.seed_hierarchy.stage_rng(stage_index)
 
@@ -221,7 +248,7 @@ class RunManager:
         ex, ey = self.dungeon.entrance_room.center
         self.player.x = ex * TILE_SIZE + TILE_SIZE * 0.5
         self.player.y = ey * TILE_SIZE + TILE_SIZE * 0.5
-        self.player.current_room_id = self.dungeon.entrance_room.room_id
+        self.sync_player_room_ownership()
 
         boss_room = self.dungeon.boss_room
         bx, by = boss_room.center
@@ -357,9 +384,15 @@ class RunManager:
         self.progression.grant_rewards(gold=gold, blue_crystals=crystals)
 
     def handle_boss_defeated(self) -> None:
-        """Grant boss rewards and spawn the stage exit portal in the boss room."""
-        if self.dungeon is None or self.portal is not None:
+        """Grant boss rewards once and spawn the stage exit portal in the boss room."""
+        if (
+            self.dungeon is None
+            or not self.in_boss_room
+            or self.stage_boss_defeated
+            or self.portal is not None
+        ):
             return
+        self.stage_boss_defeated = True
         self.award_currency(gold=BOSS_REWARD_GOLD, crystals=BOSS_REWARD_CRYSTALS)
         bx, by = self.dungeon.boss_room.center
         self.portal = StagePortal(tile_x=bx, tile_y=by)
@@ -372,6 +405,20 @@ class RunManager:
                 "Final Boss Vanquished! Press [F] at the Portal to enter the Treasure Room!"
             )
 
+    def try_use_stage_portal(self) -> tuple[bool, str]:
+        """Interact with the StagePortal ([F]) after defeating the Stage Boss."""
+        if (
+            self.player is None
+            or self.portal is None
+            or not self.stage_boss_defeated
+        ):
+            return (False, "")
+        if not self.portal.is_player_in_range(self.player.x, self.player.y):
+            return (False, "")
+        self.portal = None
+        next_state = self.advance_stage_or_finish()
+        return (True, next_state)
+
     def advance_stage_or_finish(self) -> str:
         """Transition to the next stage's Substage 1 or return 'treasure_room' after Stage 3."""
         if self.current_stage_index < TOTAL_STAGES_PER_RUN:
@@ -379,11 +426,13 @@ class RunManager:
             self.player.heal(int(self.player.max_hp * 0.35))
             self.stage_shrines_activated = 0
             self.in_boss_room = False
+            self.stage_boss_defeated = False
             self._load_substage(self.current_stage_index + 1, 1)
             return "gameplay"
 
         self.is_run_active = False
         self.run_outcome = "victory"
+        self.combat_system.clear()
         self.progression.data.runs_completed += 1
         self.progression.persist()
         return "treasure_room"

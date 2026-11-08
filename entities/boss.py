@@ -60,7 +60,8 @@ class Boss(Enemy):
             return
 
         same_room = (
-            player.current_room_id is None or player.current_room_id == self.room_id
+            player.current_room_id is not None
+            and player.current_room_id == self.room_id
         )
         dist = math.hypot(player.x - self.x, player.y - self.y)
         if same_room and (dist <= self.detection_range or self.hp < self.max_hp):

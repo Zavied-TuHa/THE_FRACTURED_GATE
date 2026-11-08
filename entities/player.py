@@ -56,7 +56,8 @@ class Player:
         self.dash_dir_y: float = 0.0
         self.knockback_vx: float = 0.0
         self.knockback_vy: float = 0.0
-        self.current_room_id: int | None = None
+        self.current_room_id: int | None = 0
+        self.current_room_bounds: tuple[float, float, float, float] | None = None
 
         # AnimationController & combat event synchronization log
         self.anim_controller: AnimationController = (

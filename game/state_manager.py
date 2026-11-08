@@ -9,6 +9,7 @@ class GameState(Enum):
     """High-level application states for THE FRACTURED GATE."""
 
     MAIN_MENU = "main_menu"
+    HUB_ROOM = "hub_room"
     CHARACTER_SELECTION = "character_selection"
     GAMEPLAY = "gameplay"
     PAUSED = "paused"
@@ -29,3 +30,7 @@ class StateManager:
         if new_state != self.current_state:
             self.previous_state = self.current_state
             self.current_state = new_state
+
+    def transition_to_hub_room(self) -> None:
+        """Transition to the Hub Room state (replaces Character Selection in Revision 2.0)."""
+        self.change_state(GameState.HUB_ROOM)

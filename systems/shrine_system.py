@@ -7,7 +7,7 @@ import math
 import pygame
 
 from config.balance import (
-    REQUIRED_SHRINES_PER_STAGE,
+    SHRINES_PER_SUBSTAGE,
     SHRINE_REWARD_CRYSTALS,
     SHRINE_REWARD_GOLD,
 )
@@ -89,7 +89,7 @@ class ShrineSystem:
         self.required_count: int = (
             required_count
             if required_count is not None
-            else (len(shrines) if shrines else REQUIRED_SHRINES_PER_STAGE)
+            else (len(shrines) if shrines else SHRINES_PER_SUBSTAGE)
         )
 
     @property
