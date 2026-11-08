@@ -146,6 +146,7 @@ class FracturedGateGame:
 
         elif state == GameState.GAMEPLAY:
             if key == KEY_PAUSE:
+                self.pause_menu.reset()
                 self.state_manager.change_state(GameState.PAUSED)
                 return
             self._handle_gameplay_keydown(key)
@@ -153,10 +154,13 @@ class FracturedGateGame:
         elif state == GameState.PAUSED:
             action = self.pause_menu.handle_keydown(key)
             if action == "resume":
+                # Resume active run without resetting or aborting state
                 self.state_manager.change_state(GameState.GAMEPLAY)
-            elif action == "character_selection":
+            elif action in ("pause_quit_character_selection", "character_selection"):
+                self.run_manager.abort_run()
                 self.state_manager.change_state(GameState.CHARACTER_SELECTION)
-            elif action == "main_menu":
+            elif action in ("pause_quit_main_menu", "main_menu"):
+                self.run_manager.abort_run()
                 self.state_manager.change_state(GameState.MAIN_MENU)
 
         elif state == GameState.TREASURE_ROOM:
@@ -219,17 +223,13 @@ class FracturedGateGame:
                     self.camera.snap_to(player.x, player.y)
                 return
 
-            # 2. Check Shrine activation
-            activated, msg, gold, crystals = shrine_sys.try_activate_nearby_shrine(
-                player.x,
-                player.y,
-                self.run_manager.enemies,
-                dungeon.tilemap,
-            )
-            if msg:
-                self.run_manager.show_banner(msg)
-            if activated:
-                self.run_manager.award_currency(gold=gold, crystals=crystals)
+            # 2. Check Shrine activation (immediate transition to next Substage or Boss Room)
+            activated, _ = self.run_manager.try_activate_shrine()
+            if activated and self.run_manager.player is not None:
+                self.camera.snap_to(
+                    self.run_manager.player.x,
+                    self.run_manager.player.y,
+                )
 
     def _try_player_basic_attack(self) -> None:
         """Fire basic attack toward current mouse cursor if off cooldown."""
@@ -287,6 +287,12 @@ class FracturedGateGame:
         move_dx, move_dy = self._read_movement_axes()
         player.update(dt, move_dx, move_dy, dungeon.tilemap)
 
+        # Update player's active room ownership from current tile position
+        current_room = dungeon.get_room_at_tile(*player.tile_pos)
+        player.current_room_id = (
+            current_room.room_id if current_room is not None else None
+        )
+
         # Update enemies
         for enemy in self.run_manager.enemies:
             if enemy.alive:
@@ -315,6 +321,7 @@ class FracturedGateGame:
         # Check player death (wait for highest-priority DEATH animation to finish)
         if not player.alive:
             if player.anim_controller.finished:
+                self.run_manager.handle_player_death()
                 self.state_manager.change_state(GameState.GAME_OVER)
                 return
 

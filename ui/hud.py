@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pygame
 
-from config.balance import TOTAL_STAGES_PER_RUN
+from config.balance import (
+    REQUIRED_SHRINES_PER_STAGE_V2,
+    SUBSTAGES_PER_STAGE,
+    TOTAL_STAGES_PER_RUN,
+)
 from config.settings import (
     COLOR_UI_BORDER,
     COLOR_UI_BOSS_HP,
@@ -67,25 +71,32 @@ class GameplayHUD:
         surface.blit(gold_txt, (14, 36))
         surface.blit(crys_txt, (96, 36))
 
-        # 2. Top-Right Panel: Stage & Shrine Objective Progress + Mini-map
-        tr_rect = pygame.Rect(INTERNAL_WIDTH - 208, 8, 200, 48)
+        # 2. Top-Right Panel: Stage, Substage & Shrine Objective Progress + Mini-map
+        tr_rect = pygame.Rect(INTERNAL_WIDTH - 224, 8, 216, 48)
         pygame.draw.rect(surface, COLOR_UI_PANEL, tr_rect)
         pygame.draw.rect(surface, COLOR_UI_BORDER, tr_rect, 1)
 
-        stage_str = (
-            f"Stage {run_manager.current_stage_index}/{TOTAL_STAGES_PER_RUN}: "
-            f"{dungeon.biome.name}"
-        )
+        if run_manager.in_boss_room:
+            stage_str = (
+                f"Stage {run_manager.current_stage_index}/{TOTAL_STAGES_PER_RUN} BOSS: "
+                f"{dungeon.biome.name}"
+            )
+        else:
+            stage_str = (
+                f"S{run_manager.current_stage_index}/{TOTAL_STAGES_PER_RUN}-"
+                f"Sub {run_manager.current_substage_index}/{SUBSTAGES_PER_STAGE}: "
+                f"{dungeon.biome.name}"
+            )
         stage_surf = small_font.render(stage_str, False, COLOR_UI_TEXT)
         surface.blit(stage_surf, (tr_rect.x + 8, tr_rect.y + 7))
 
-        shrine_col = (
-            (110, 235, 140)
-            if shrine_sys.all_activated
-            else COLOR_UI_GOLD
+        all_stage_shrines = (
+            run_manager.stage_shrines_activated >= REQUIRED_SHRINES_PER_STAGE_V2
         )
+        shrine_col = (110, 235, 140) if all_stage_shrines else COLOR_UI_GOLD
         shrine_str = (
-            f"Activated Shrines: {shrine_sys.activated_count}/{shrine_sys.required_count}"
+            f"Stage Shrines: {run_manager.stage_shrines_activated}/"
+            f"{REQUIRED_SHRINES_PER_STAGE_V2}"
         )
         shrine_surf = small_font.render(shrine_str, False, shrine_col)
         surface.blit(shrine_surf, (tr_rect.x + 8, tr_rect.y + 26))
@@ -244,6 +255,12 @@ class GameplayHUD:
                 col = (210, 55, 65)
             elif room.room_type == RoomType.SHRINE:
                 col = (80, 175, 240)
+            elif room.room_type in (RoomType.CHEST, RoomType.TREASURE, RoomType.SHOP):
+                col = (225, 185, 75)
+            elif room.room_type == RoomType.SPECIAL:
+                col = (165, 110, 225)
+            elif room.is_mandatory:
+                col = (135, 95, 130)
             pygame.draw.rect(surface, col, pygame.Rect(rx, ry, rw, rh))
 
         # Draw player dot

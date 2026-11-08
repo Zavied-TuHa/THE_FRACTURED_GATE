@@ -1,4 +1,4 @@
-"""Room data structures and room type definitions for dungeon generation."""
+"""Room data structures, room states, and room type definitions for dungeon generation."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from enum import Enum
 
 
 class RoomType(Enum):
-    """Supported room types in THE FRACTURED GATE."""
+    """Supported room types in THE FRACTURED GATE (preserving Phase 1 + Revision 2.0 types)."""
 
+    # Phase 1 original types (preserved for full backward compatibility)
     ENTRANCE = "entrance"
     NORMAL_COMBAT = "normal_combat"
     ELITE_COMBAT = "elite_combat"
@@ -16,6 +17,34 @@ class RoomType(Enum):
     MINI_BOSS = "mini_boss"
     TREASURE = "treasure"
     BOSS = "boss"
+
+    # Revision 2.0 Substage room categories
+    ENEMY = "enemy"
+    SPECIAL = "special"
+    SHOP = "shop"
+    CHEST = "chest"
+    EXIT = "exit"
+    TRANSITION = "transition"
+
+    @property
+    def is_enemy_room(self) -> bool:
+        """Return True if this room type represents an enemy combat room."""
+        return self in (
+            RoomType.ENEMY,
+            RoomType.NORMAL_COMBAT,
+            RoomType.ELITE_COMBAT,
+            RoomType.MINI_BOSS,
+        )
+
+
+class RoomState(Enum):
+    """Reusable room state machine states for exploration and combat locking."""
+
+    UNEXPLORED = "unexplored"
+    EXPLORING = "exploring"
+    COMBAT_LOCKED = "combat_locked"
+    CLEARED = "cleared"
+    COMPLETED = "completed"
 
 
 @dataclass
@@ -31,6 +60,10 @@ class Room:
     connected_room_ids: list[int] = field(default_factory=list)
     cleared: bool = False
     visited: bool = False
+    is_mandatory: bool = False
+    state: RoomState = RoomState.UNEXPLORED
+    door_tiles: list[tuple[int, int]] = field(default_factory=list)
+    trigger_margin: int = 2
 
     @property
     def right(self) -> int:
@@ -52,6 +85,12 @@ class Room:
         """Return inner floor bounds (x1, y1, x2, y2) inset by 1 tile from room edges."""
         return (self.x + 1, self.y + 1, self.right - 2, self.bottom - 2)
 
+    @property
+    def trigger_bounds(self) -> tuple[int, int, int, int]:
+        """Return tile bounds (x1, y1, x2, y2) inset by trigger_margin for Phase 2.4 combat lock."""
+        m = max(1, min(self.trigger_margin, min(self.width, self.height) // 2 - 1))
+        return (self.x + m, self.y + m, self.right - 1 - m, self.bottom - 1 - m)
+
     def intersects(self, other: Room, padding: int = 0) -> bool:
         """Check whether this room overlaps another room, including a tile padding margin."""
         return not (
@@ -64,3 +103,8 @@ class Room:
     def contains_tile(self, tx: int, ty: int) -> bool:
         """Return True if the tile (tx, ty) lies inside this room's floor area."""
         return self.x <= tx < self.right and self.y <= ty < self.bottom
+
+    def contains_trigger_tile(self, tx: int, ty: int) -> bool:
+        """Return True if the tile (tx, ty) lies inside the inner combat trigger boundary."""
+        x1, y1, x2, y2 = self.trigger_bounds
+        return x1 <= tx <= x2 and y1 <= ty <= y2

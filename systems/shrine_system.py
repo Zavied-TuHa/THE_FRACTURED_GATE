@@ -78,11 +78,19 @@ class Shrine:
 
 
 class ShrineSystem:
-    """Manages the three Shrine objectives required to unlock a stage's Boss Room."""
+    """Manages the Shrine objectives in the active substage or stage."""
 
-    def __init__(self, shrines: list[Shrine]) -> None:
+    def __init__(
+        self,
+        shrines: list[Shrine],
+        required_count: int | None = None,
+    ) -> None:
         self.shrines: list[Shrine] = shrines
-        self.required_count: int = REQUIRED_SHRINES_PER_STAGE
+        self.required_count: int = (
+            required_count
+            if required_count is not None
+            else (len(shrines) if shrines else REQUIRED_SHRINES_PER_STAGE)
+        )
 
     @property
     def activated_count(self) -> int:
@@ -131,7 +139,13 @@ class ShrineSystem:
         shrine.activated = True
         if self.all_activated:
             tilemap.unlock_boss_gates()
-            msg = "All 3 Shrines Activated! The Boss Gate is now UNLOCKED!"
+            if self.required_count == 1:
+                msg = (
+                    f"Shrine Activated! "
+                    f"+{SHRINE_REWARD_GOLD}G +{SHRINE_REWARD_CRYSTALS} Crystals"
+                )
+            else:
+                msg = f"All {self.required_count} Shrines Activated! The Boss Gate is now UNLOCKED!"
         else:
             msg = (
                 f"Shrine Activated ({self.activated_count}/{self.required_count})! "

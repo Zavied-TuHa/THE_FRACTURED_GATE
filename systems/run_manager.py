@@ -1,4 +1,4 @@
-"""Run lifecycle manager handling 3-stage biome order, spawning, and stage transitions."""
+"""Run lifecycle manager handling 3-stage, 5-substage progression, spawning, and transitions."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ from combat.combat_system import CombatSystem
 from config.balance import (
     BOSS_REWARD_CRYSTALS,
     BOSS_REWARD_GOLD,
+    REQUIRED_SHRINES_PER_STAGE_V2,
+    SHRINES_PER_SUBSTAGE,
+    SUBSTAGES_PER_STAGE,
     TOTAL_STAGES_PER_RUN,
     TREASURE_CHEST_CRYSTALS,
     TREASURE_CHEST_GOLD,
@@ -20,6 +23,7 @@ from entities.boss import Boss
 from entities.enemy import Enemy
 from entities.player import Player
 from systems.progression import ProgressionManager
+from systems.rng_streams import SeedHierarchy
 from systems.shrine_system import Shrine, ShrineSystem
 from world.dungeon_generator import DungeonGenerator, GeneratedDungeon
 from world.room import Room, RoomType
@@ -48,13 +52,20 @@ class StagePortal:
 
 
 class RunManager:
-    """Orchestrates a 3-stage roguelike run, stage seeds, spawning, and rewards."""
+    """Orchestrates a 3-stage × 5-substage roguelike run, seeds, spawning, and transitions."""
 
     def __init__(self, progression: ProgressionManager) -> None:
         self.progression: ProgressionManager = progression
         self.run_seed: int = 0
+        self.seed_hierarchy: SeedHierarchy = SeedHierarchy(0)
         self.stage_biomes: list[str] = []
         self.current_stage_index: int = 1  # 1..3
+        self.current_substage_index: int = 1  # 1..5
+        self.stage_shrines_activated: int = 0  # 0..5 within current stage
+        self.total_shrines_activated: int = 0  # 0..15 across the entire run
+        self.in_boss_room: bool = False
+        self.is_run_active: bool = False
+        self.run_outcome: str = "idle"
         self.selected_character_id: str = "warrior"
 
         self.dungeon: GeneratedDungeon | None = None
@@ -85,14 +96,21 @@ class RunManager:
         character_id: str = "warrior",
         seed: int | None = None,
     ) -> None:
-        """Initialize a fresh 3-stage run with a deterministic seed."""
+        """Initialize a fresh 3-stage × 5-substage run with a deterministic seed."""
         if seed is None:
             seed = random.SystemRandom().randint(100_000, 999_999_999)
         self.run_seed = int(seed)
-        run_rng = random.Random(self.run_seed)
+        self.seed_hierarchy = SeedHierarchy(self.run_seed)
+        run_rng = self.seed_hierarchy.run_rng()
 
         self.stage_biomes = self.build_stage_biome_order(run_rng)
         self.current_stage_index = 1
+        self.current_substage_index = 1
+        self.stage_shrines_activated = 0
+        self.total_shrines_activated = 0
+        self.in_boss_room = False
+        self.is_run_active = True
+        self.run_outcome = "in_progress"
         self.selected_character_id = character_id
         self.run_gold_earned = 0
         self.run_crystals_earned = 0
@@ -114,26 +132,34 @@ class RunManager:
         self.progression.data.runs_started += 1
         self.progression.persist()
 
-        self._load_stage(self.current_stage_index)
+        self._load_substage(self.current_stage_index, self.current_substage_index)
 
-    def _load_stage(self, stage_index: int) -> None:
-        """Generate dungeon, place player at entrance, and spawn shrines, enemies, and boss."""
+    def _load_substage(self, stage_index: int, substage_index: int) -> None:
+        """Generate a substage dungeon, place player at entrance, and spawn its shrine and enemies."""
         self.current_stage_index = stage_index
+        self.current_substage_index = substage_index
+        self.in_boss_room = False
+
         biome_id = self.stage_biomes[stage_index - 1]
-        stage_seed = self.run_seed + stage_index * 10_007
-        self._stage_rng = random.Random(stage_seed)
+        self._stage_rng = self.seed_hierarchy.substage_rng(stage_index, substage_index)
 
         generator = DungeonGenerator(biome_id=biome_id)
-        self.dungeon = generator.generate(seed=stage_seed)
+        self.dungeon = generator.generate_substage(
+            run_seed=self.run_seed,
+            stage_index=stage_index,
+            substage_index=substage_index,
+        )
         self.combat_system.clear()
         self.portal = None
+        self.boss = None
 
         assert self.player is not None
         ex, ey = self.dungeon.entrance_room.center
         self.player.x = ex * TILE_SIZE + TILE_SIZE * 0.5
         self.player.y = ey * TILE_SIZE + TILE_SIZE * 0.5
+        self.player.current_room_id = self.dungeon.entrance_room.room_id
 
-        # Build 3 Shrine entities
+        # Build the single mandatory Shrine entity for this substage
         shrines: list[Shrine] = []
         for idx, s_room in enumerate(self.dungeon.shrine_rooms):
             cx, cy = s_room.center
@@ -145,60 +171,179 @@ class RunManager:
                     tile_y=cy,
                 )
             )
-        self.shrine_system = ShrineSystem(shrines)
+        self.shrine_system = ShrineSystem(
+            shrines, required_count=SHRINES_PER_SUBSTAGE
+        )
 
-        # Spawn enemies and stage boss
+        # Spawn enemies per room using isolated room RNG streams
         self.enemies = []
-        self.boss = None
         for room in self.dungeon.rooms:
             if room.room_type == RoomType.ENTRANCE:
                 continue
-            if room.room_type == RoomType.BOSS:
-                bx, by = room.center
-                self.boss = Boss(
-                    x=bx * TILE_SIZE + TILE_SIZE * 0.5,
-                    y=by * TILE_SIZE + TILE_SIZE * 0.5,
-                    room_id=room.room_id,
-                    boss_name=self.dungeon.biome.boss_name,
-                    stage_index=stage_index,
-                )
-                self.enemies.append(self.boss)
-            else:
-                self._spawn_enemies_for_room(room, stage_index)
+            self._spawn_enemies_for_room(room, stage_index, substage_index)
 
         self.show_banner(
-            f"Stage {stage_index}/{TOTAL_STAGES_PER_RUN}: {self.dungeon.biome.name} (Seed: {stage_seed})"
+            f"Stage {stage_index}-{substage_index}: {self.dungeon.biome.name} "
+            f"(Shrines: {self.stage_shrines_activated}/{REQUIRED_SHRINES_PER_STAGE_V2})"
         )
 
-    def _spawn_enemies_for_room(self, room: Room, stage_index: int) -> None:
-        """Populate a room with enemies according to its RoomType."""
+    def can_enter_boss_room(self) -> bool:
+        """Return True only when all 5 mandatory shrines of the current stage are activated."""
+        return (
+            self.stage_shrines_activated >= REQUIRED_SHRINES_PER_STAGE_V2
+            and self.current_substage_index == SUBSTAGES_PER_STAGE
+        )
+
+    def _load_boss_arena(self, stage_index: int) -> None:
+        """Generate the dedicated Boss Arena after Shrine 5 of the stage is activated."""
+        if not self.can_enter_boss_room():
+            raise RuntimeError(
+                f"Cannot enter Stage {stage_index} Boss Room before activating all "
+                f"{REQUIRED_SHRINES_PER_STAGE_V2} Stage Shrines "
+                f"(current: {self.stage_shrines_activated})."
+            )
+
+        self.current_stage_index = stage_index
+        self.in_boss_room = True
+        biome_id = self.stage_biomes[stage_index - 1]
+        self._stage_rng = self.seed_hierarchy.stage_rng(stage_index)
+
+        generator = DungeonGenerator(biome_id=biome_id)
+        self.dungeon = generator.generate_boss_arena(
+            run_seed=self.run_seed,
+            stage_index=stage_index,
+        )
+        self.combat_system.clear()
+        self.portal = None
+        self.shrine_system = ShrineSystem([], required_count=0)
+
+        assert self.player is not None
+        ex, ey = self.dungeon.entrance_room.center
+        self.player.x = ex * TILE_SIZE + TILE_SIZE * 0.5
+        self.player.y = ey * TILE_SIZE + TILE_SIZE * 0.5
+        self.player.current_room_id = self.dungeon.entrance_room.room_id
+
+        boss_room = self.dungeon.boss_room
+        bx, by = boss_room.center
+        room_bounds = (
+            float((boss_room.x + 1) * TILE_SIZE),
+            float((boss_room.y + 1) * TILE_SIZE),
+            float((boss_room.right - 1) * TILE_SIZE),
+            float((boss_room.bottom - 1) * TILE_SIZE),
+        )
+        self.boss = Boss(
+            x=bx * TILE_SIZE + TILE_SIZE * 0.5,
+            y=by * TILE_SIZE + TILE_SIZE * 0.5,
+            room_id=boss_room.room_id,
+            boss_name=self.dungeon.biome.boss_name,
+            stage_index=stage_index,
+            room_bounds=room_bounds,
+        )
+        self.enemies = [self.boss]
+
+        self.show_banner(
+            f"Stage {stage_index} BOSS: {self.dungeon.biome.boss_name}!"
+        )
+
+    def _spawn_enemies_for_room(
+        self,
+        room: Room,
+        stage_index: int,
+        substage_index: int = 1,
+    ) -> None:
+        """Populate a room with enemies according to its RoomType and isolated RNG stream."""
+        room_rng = self.seed_hierarchy.enemy_wave_rng(
+            stage_index, substage_index, room.room_id
+        )
         archetypes: list[str] = []
-        if room.room_type == RoomType.NORMAL_COMBAT:
-            count = self._stage_rng.randint(2, 3 + (1 if stage_index >= 2 else 0))
+        if room.room_type in (RoomType.ENEMY, RoomType.NORMAL_COMBAT):
+            base_max = 3 + (1 if stage_index >= 2 else 0) + (1 if substage_index >= 4 else 0)
+            count = room_rng.randint(2, base_max)
             pool = ["melee", "fast", "ranged"]
-            archetypes = [self._stage_rng.choice(pool) for _ in range(count)]
+            archetypes = [room_rng.choice(pool) for _ in range(count)]
         elif room.room_type == RoomType.SHRINE:
             archetypes = ["melee", "ranged", "fast"][: 2 + (1 if stage_index == 3 else 0)]
         elif room.room_type == RoomType.ELITE_COMBAT:
             archetypes = ["elite", "melee", "ranged"]
         elif room.room_type == RoomType.MINI_BOSS:
             archetypes = ["mini_boss", "fast"]
-        elif room.room_type == RoomType.TREASURE:
+        elif room.room_type in (RoomType.TREASURE, RoomType.CHEST):
             archetypes = ["elite", "fast"]
+        elif room.room_type in (RoomType.SPECIAL, RoomType.SHOP):
+            # Safe / non-combat utility rooms in substages have no default enemies
+            return
 
         x1, y1, x2, y2 = room.inner_bounds
         cx, cy = room.center
+        room_bounds = (
+            float((room.x + 1) * TILE_SIZE),
+            float((room.y + 1) * TILE_SIZE),
+            float((room.right - 1) * TILE_SIZE),
+            float((room.bottom - 1) * TILE_SIZE),
+        )
         for arch in archetypes:
             for _ in range(12):
-                tx = self._stage_rng.randint(max(x1, room.x + 2), min(x2, room.right - 3))
-                ty = self._stage_rng.randint(max(y1, room.y + 2), min(y2, room.bottom - 3))
+                tx = room_rng.randint(max(x1, room.x + 2), min(x2, room.right - 3))
+                ty = room_rng.randint(max(y1, room.y + 2), min(y2, room.bottom - 3))
                 # Avoid spawning directly on top of a Shrine at room center
                 if room.room_type == RoomType.SHRINE and abs(tx - cx) <= 1 and abs(ty - cy) <= 1:
                     continue
                 wx = tx * TILE_SIZE + TILE_SIZE * 0.5
                 wy = ty * TILE_SIZE + TILE_SIZE * 0.5
-                self.enemies.append(Enemy(x=wx, y=wy, archetype=arch, room_id=room.room_id))
+                self.enemies.append(
+                    Enemy(
+                        x=wx,
+                        y=wy,
+                        archetype=arch,
+                        room_id=room.room_id,
+                        room_bounds=room_bounds,
+                    )
+                )
                 break
+
+    def try_activate_shrine(self) -> tuple[bool, str]:
+        """Attempt to activate a nearby Shrine and execute immediate Substage / Boss transition."""
+        if (
+            self.player is None
+            or self.dungeon is None
+            or self.shrine_system is None
+            or self.in_boss_room
+        ):
+            return (False, "")
+
+        activated, msg, gold, crystals = self.shrine_system.try_activate_nearby_shrine(
+            self.player.x,
+            self.player.y,
+            self.enemies,
+            self.dungeon.tilemap,
+        )
+        if not activated:
+            if msg:
+                self.show_banner(msg)
+            return (False, msg)
+
+        self.award_currency(gold=gold, crystals=crystals)
+        self.stage_shrines_activated += 1
+        self.total_shrines_activated += 1
+
+        if self.current_substage_index < SUBSTAGES_PER_STAGE:
+            next_sub = self.current_substage_index + 1
+            self._load_substage(self.current_stage_index, next_sub)
+            transition_msg = (
+                f"Shrine {self.stage_shrines_activated}/{REQUIRED_SHRINES_PER_STAGE_V2} Activated! "
+                f"Advancing to Stage {self.current_stage_index}-{next_sub}!"
+            )
+            self.show_banner(transition_msg)
+            return (True, transition_msg)
+
+        # Shrine 5 of the current stage activated -> transition immediately to Stage Boss Arena
+        self._load_boss_arena(self.current_stage_index)
+        transition_msg = (
+            f"All {REQUIRED_SHRINES_PER_STAGE_V2} Stage Shrines Activated! "
+            f"Entering {self.dungeon.biome.boss_name}'s Lair!"
+        )
+        self.show_banner(transition_msg)
+        return (True, transition_msg)
 
     def show_banner(self, text: str, duration: float = 3.2) -> None:
         """Display a status message banner on the HUD."""
@@ -228,16 +373,33 @@ class RunManager:
             )
 
     def advance_stage_or_finish(self) -> str:
-        """Transition to the next stage or return 'treasure_room' if Stage 3 is complete."""
+        """Transition to the next stage's Substage 1 or return 'treasure_room' after Stage 3."""
         if self.current_stage_index < TOTAL_STAGES_PER_RUN:
             assert self.player is not None
             self.player.heal(int(self.player.max_hp * 0.35))
-            self._load_stage(self.current_stage_index + 1)
+            self.stage_shrines_activated = 0
+            self.in_boss_room = False
+            self._load_substage(self.current_stage_index + 1, 1)
             return "gameplay"
 
+        self.is_run_active = False
+        self.run_outcome = "victory"
         self.progression.data.runs_completed += 1
         self.progression.persist()
         return "treasure_room"
+
+    def handle_player_death(self) -> None:
+        """Mark the active run as ended due to Game Over (player death)."""
+        self.is_run_active = False
+        self.run_outcome = "game_over"
+        self.combat_system.clear()
+
+    def abort_run(self) -> None:
+        """Cleanly abort the active run via Pause Quit without corrupting persistent progression."""
+        self.is_run_active = False
+        self.run_outcome = "aborted"
+        self.combat_system.clear()
+        self.portal = None
 
     def claim_treasure_chest(self) -> tuple[int, int]:
         """Open the final Treasure Room chest and award large Gold and Blue Crystal payout."""

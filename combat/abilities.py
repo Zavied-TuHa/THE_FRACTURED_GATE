@@ -24,6 +24,7 @@ class MeleeAttackArc:
     elapsed: float = 0.0
     color: tuple[int, int, int] = (240, 220, 150)
     hit_entity_ids: set[int] = field(default_factory=set)
+    room_id: int | None = None
 
     def update(self, dt: float) -> bool:
         """Advance attack timer; return True while active."""

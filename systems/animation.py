@@ -155,7 +155,7 @@ class AnimationController:
         if direction is not None and self.state != AnimationState.DEATH:
             self.direction = direction
 
-        if self.state == new_state and not restart_if_same and not self.finished:
+        if self.state == new_state and not restart_if_same:
             return False
 
         self.state = new_state

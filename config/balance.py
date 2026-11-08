@@ -211,6 +211,28 @@ ENEMY_CONFIGS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Run & Shrine Requirements
-REQUIRED_SHRINES_PER_STAGE: int = 3
+# Run, Stage & Substage Requirements (Revision 2.0)
+REQUIRED_SHRINES_PER_STAGE: int = 3  # Preserved for legacy single-map generator tests
 TOTAL_STAGES_PER_RUN: int = 3
+SUBSTAGES_PER_STAGE: int = 5
+SHRINES_PER_SUBSTAGE: int = 1
+REQUIRED_SHRINES_PER_STAGE_V2: int = SUBSTAGES_PER_STAGE * SHRINES_PER_SUBSTAGE  # 5 Shrines/Stage
+TOTAL_SUBSTAGES_PER_RUN: int = TOTAL_STAGES_PER_RUN * SUBSTAGES_PER_STAGE  # 15 Substages/Run
+MIN_MANDATORY_ENEMY_ROOMS_PER_SUBSTAGE: int = 2
+
+# Variable room count ranges (min_rooms, max_rooms) by Substage index (1..5)
+SUBSTAGE_ROOM_COUNTS: dict[int, tuple[int, int]] = {
+    1: (6, 8),
+    2: (7, 9),
+    3: (8, 10),
+    4: (8, 11),
+    5: (9, 12),
+}
+
+# Configurable distribution weights for optional branch rooms in a Substage
+OPTIONAL_ROOM_WEIGHTS: dict[str, float] = {
+    "enemy": 0.45,
+    "special": 0.20,
+    "shop": 0.15,
+    "chest": 0.20,
+}

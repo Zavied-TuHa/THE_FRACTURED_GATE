@@ -56,6 +56,7 @@ class Player:
         self.dash_dir_y: float = 0.0
         self.knockback_vx: float = 0.0
         self.knockback_vy: float = 0.0
+        self.current_room_id: int | None = None
 
         # AnimationController & combat event synchronization log
         self.anim_controller: AnimationController = (
@@ -82,6 +83,8 @@ class Player:
 
     def update_aim(self, world_mouse_x: float, world_mouse_y: float) -> None:
         """Update normalized directional aim vector toward world mouse cursor."""
+        if not self.alive:
+            return
         dx = world_mouse_x - self.x
         dy = world_mouse_y - self.y
         dist = math.hypot(dx, dy)

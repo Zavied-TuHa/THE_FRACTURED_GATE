@@ -26,7 +26,7 @@ def test_stage_biome_order_randomization() -> None:
 
 
 def test_full_run_shrines_boss_and_treasure_flow(tmp_path: Path) -> None:
-    """Simulate a 3-stage run: activate 3 shrines, unlock boss gate, progress to Treasure Room."""
+    """Simulate a full Revision 2.0 3-stage × 5-substage (15 shrines) run to Treasure Room."""
     save_sys = SaveSystem(
         save_path=tmp_path / "profile.save.json",
         backup_path=tmp_path / "profile.save.bak",
@@ -37,35 +37,41 @@ def test_full_run_shrines_boss_and_treasure_flow(tmp_path: Path) -> None:
 
     for stage_idx in (1, 2, 3):
         assert run_mgr.current_stage_index == stage_idx
-        assert run_mgr.dungeon is not None
-        assert run_mgr.shrine_system is not None
-        assert run_mgr.player is not None
+        assert run_mgr.stage_shrines_activated == 0
+        assert run_mgr.in_boss_room is False
 
-        # Clear all non-boss enemies so shrines are unguarded
-        for enemy in run_mgr.enemies:
-            if enemy is not run_mgr.boss:
+        for substage_idx in (1, 2, 3, 4, 5):
+            assert run_mgr.current_substage_index == substage_idx
+            assert run_mgr.dungeon is not None
+            assert run_mgr.shrine_system is not None
+            assert run_mgr.player is not None
+            assert len(run_mgr.shrine_system.shrines) == 1
+
+            # Clear all enemies in the substage so the shrine is unguarded
+            for enemy in run_mgr.enemies:
                 enemy.alive = False
 
-        # Activate all 3 shrines
-        for shrine in run_mgr.shrine_system.shrines:
+            shrine = run_mgr.shrine_system.shrines[0]
             wx, wy = shrine.world_pos
             run_mgr.player.x = wx
             run_mgr.player.y = wy
-            ok, _, gold, crys = run_mgr.shrine_system.try_activate_nearby_shrine(
-                run_mgr.player.x,
-                run_mgr.player.y,
-                run_mgr.enemies,
-                run_mgr.dungeon.tilemap,
-            )
+            ok, _ = run_mgr.try_activate_shrine()
             assert ok is True
-            run_mgr.award_currency(gold=gold, crystals=crys)
+            assert run_mgr.stage_shrines_activated == substage_idx
 
-        assert run_mgr.shrine_system.all_activated is True
+            if substage_idx < 5:
+                assert run_mgr.in_boss_room is False
+                assert run_mgr.current_substage_index == substage_idx + 1
+            else:
+                assert run_mgr.in_boss_room is True
+
+        # Now in Stage Boss Arena
+        assert run_mgr.boss is not None
+        assert run_mgr.dungeon is not None
         for gx, gy in run_mgr.dungeon.tilemap.boss_gate_tiles:
             assert run_mgr.dungeon.tilemap.get_tile(gx, gy) == TileType.BOSS_GATE_UNLOCKED
 
         # Defeat boss and use stage portal
-        assert run_mgr.boss is not None
         run_mgr.boss.alive = False
         run_mgr.handle_boss_defeated()
         assert run_mgr.portal is not None
@@ -76,6 +82,7 @@ def test_full_run_shrines_boss_and_treasure_flow(tmp_path: Path) -> None:
         else:
             assert next_screen == "treasure_room"
 
+    assert run_mgr.total_shrines_activated == 15
     # Claim final Treasure Chest
     gold_chest, crys_chest = run_mgr.claim_treasure_chest()
     assert gold_chest > 0 and crys_chest > 0

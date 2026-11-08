@@ -1,4 +1,4 @@
-"""Projectile entity for ranged player and enemy attacks."""
+"""Projectile entity for ranged player and enemy attacks with room ownership isolation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from world.tilemap import TileMap
 
 @dataclass
 class Projectile:
-    """Linear projectile with range limit and wall collision."""
+    """Linear projectile with range limit, wall collision, and room ownership isolation."""
 
     x: float
     y: float
@@ -25,6 +25,8 @@ class Projectile:
     color: tuple[int, int, int] = (230, 190, 90)
     radius: float = 3.5
     traveled: float = 0.0
+    room_id: int | None = None
+    room_bounds: tuple[float, float, float, float] | None = None
 
     def __post_init__(self) -> None:
         mag = math.hypot(self.dir_x, self.dir_y)
@@ -35,7 +37,7 @@ class Projectile:
             self.dir_x, self.dir_y = 1.0, 0.0
 
     def update(self, dt: float, tilemap: TileMap) -> bool:
-        """Advance position; return False if hitting a solid wall or exceeding max_distance."""
+        """Advance position; return False if hitting a wall, leaving room_bounds, or exceeding range."""
         step = self.speed * dt
         self.x += self.dir_x * step
         self.y += self.dir_y * step
@@ -43,6 +45,11 @@ class Projectile:
 
         if self.traveled >= self.max_distance:
             return False
+
+        if self.room_bounds is not None:
+            min_x, min_y, max_x, max_y = self.room_bounds
+            if not (min_x <= self.x <= max_x and min_y <= self.y <= max_y):
+                return False
 
         tx = int(self.x // TILE_SIZE)
         ty = int(self.y // TILE_SIZE)

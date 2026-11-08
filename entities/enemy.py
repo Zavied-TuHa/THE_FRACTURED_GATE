@@ -29,10 +29,12 @@ if TYPE_CHECKING:
 class EnemyState(Enum):
     """Finite state machine states for enemy AI."""
 
+    DORMANT = "dormant"
     IDLE = "idle"
     PATROL = "patrol"
     CHASE = "chase"
     ATTACK = "attack"
+    HURT = "hurt"
     DEAD = "dead"
 
 
@@ -56,6 +58,7 @@ class Enemy:
         y: float,
         archetype: str = "melee",
         room_id: int = 0,
+        room_bounds: tuple[float, float, float, float] | None = None,
     ) -> None:
         self.entity_id: int = Enemy._next_id
         Enemy._next_id += 1
@@ -64,6 +67,7 @@ class Enemy:
         self.y: float = y
         self.archetype: str = archetype if archetype in ENEMY_CONFIGS else "melee"
         self.room_id: int = room_id
+        self.room_bounds: tuple[float, float, float, float] | None = room_bounds
 
         cfg = ENEMY_CONFIGS[self.archetype]
         self.name: str = str(cfg["name"])
@@ -134,7 +138,7 @@ class Enemy:
         rng: random.Random,
     ) -> None:
         """Execute AI state transitions, movement, and attacks."""
-        if not self.alive:
+        if not self.alive or self.state == EnemyState.DORMANT:
             return
 
         if self.attack_timer > 0.0:
@@ -145,13 +149,19 @@ class Enemy:
         dx = player.x - self.x
         dy = player.y - self.y
         dist_to_player = math.hypot(dx, dy)
+        same_room = (
+            player.current_room_id is None or player.current_room_id == self.room_id
+        )
 
-        # AI state selection
-        if player.alive and dist_to_player <= self.attack_range:
+        # AI state selection (strictly isolated by room ownership)
+        if same_room and player.alive and dist_to_player <= self.attack_range:
             self.state = EnemyState.ATTACK
-        elif player.alive and dist_to_player <= self.detection_range:
+        elif same_room and player.alive and dist_to_player <= self.detection_range:
             self.state = EnemyState.CHASE
         else:
+            if self.state in (EnemyState.CHASE, EnemyState.ATTACK):
+                self.state = EnemyState.IDLE
+                self.patrol_timer = 0.5
             self.patrol_timer -= dt
             if self.patrol_timer <= 0.0:
                 if self.state == EnemyState.IDLE:
@@ -204,6 +214,15 @@ class Enemy:
             tilemap,
         )
 
+        # Keep enemy strictly inside its assigned room bounds
+        if self.room_bounds is not None:
+            min_x, min_y, max_x, max_y = self.room_bounds
+            pad = float(self.half_size)
+            if max_x - min_x > pad * 2.0:
+                self.x = max(min_x + pad, min(max_x - pad, self.x))
+            if max_y - min_y > pad * 2.0:
+                self.y = max(min_y + pad, min(max_y - pad, self.y))
+
     def _perform_attack(
         self,
         dir_x: float,
@@ -223,6 +242,8 @@ class Enemy:
                     max_distance=self.attack_range + 35.0,
                     owner_is_player=False,
                     color=(210, 95, 245),
+                    room_id=self.room_id,
+                    room_bounds=self.room_bounds,
                 )
             )
         else:
@@ -239,6 +260,7 @@ class Enemy:
                     knockback_force=95.0,
                     duration=0.14,
                     color=(235, 80, 85),
+                    room_id=self.room_id,
                 )
             )
 

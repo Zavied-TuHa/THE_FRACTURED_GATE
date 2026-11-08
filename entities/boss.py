@@ -9,7 +9,7 @@ import pygame
 
 from combat.abilities import MeleeAttackArc
 from config.settings import COLOR_BOSS
-from entities.enemy import Enemy
+from entities.enemy import Enemy, EnemyState
 from entities.projectile import Projectile
 
 if TYPE_CHECKING:
@@ -28,8 +28,15 @@ class Boss(Enemy):
         room_id: int,
         boss_name: str = "Malakor, Sovereign of the Gate",
         stage_index: int = 1,
+        room_bounds: tuple[float, float, float, float] | None = None,
     ) -> None:
-        super().__init__(x=x, y=y, archetype="boss", room_id=room_id)
+        super().__init__(
+            x=x,
+            y=y,
+            archetype="boss",
+            room_id=room_id,
+            room_bounds=room_bounds,
+        )
         self.name = boss_name
         # Scale boss health and damage slightly with stage index (1..3)
         scale = 1.0 + 0.22 * (stage_index - 1)
@@ -49,15 +56,18 @@ class Boss(Enemy):
         rng: random.Random,
     ) -> None:
         """Update boss AI, radial nova pattern, and base movement/attacks."""
-        if not self.alive:
+        if not self.alive or self.state == EnemyState.DORMANT:
             return
 
+        same_room = (
+            player.current_room_id is None or player.current_room_id == self.room_id
+        )
         dist = math.hypot(player.x - self.x, player.y - self.y)
-        if dist <= self.detection_range or self.hp < self.max_hp:
+        if same_room and (dist <= self.detection_range or self.hp < self.max_hp):
             self.engaged = True
 
         self.nova_cooldown_timer = max(0.0, self.nova_cooldown_timer - dt)
-        if self.engaged and player.alive and self.nova_cooldown_timer <= 0.0:
+        if same_room and self.engaged and player.alive and self.nova_cooldown_timer <= 0.0:
             self._spawn_radial_nova(combat_system)
             # Enrage below 50% HP: faster nova cooldown
             self.nova_cooldown_timer = 3.0 if self.hp < self.max_hp * 0.5 else 4.4
@@ -84,6 +94,7 @@ class Boss(Enemy):
                 knockback_force=155.0,
                 duration=0.20,
                 color=(255, 70, 90),
+                room_id=self.room_id,
             )
         )
 
@@ -104,6 +115,8 @@ class Boss(Enemy):
                     owner_is_player=False,
                     color=(245, 70, 110),
                     radius=4.5,
+                    room_id=self.room_id,
+                    room_bounds=self.room_bounds,
                 )
             )
 

@@ -49,6 +49,7 @@ class CombatSystem:
                     max_distance=player.stats.attack_range,
                     owner_is_player=True,
                     color=player.stats.color,
+                    room_id=player.current_room_id,
                 )
             )
         else:
@@ -65,6 +66,7 @@ class CombatSystem:
                     knockback_force=140.0,
                     duration=0.14,
                     color=(245, 225, 145),
+                    room_id=player.current_room_id,
                 )
             )
 
@@ -94,6 +96,7 @@ class CombatSystem:
                         knockback_force=210.0,
                         duration=0.20,
                         color=(255, 130, 80),
+                        room_id=player.current_room_id,
                     )
                 )
             else:
@@ -110,6 +113,7 @@ class CombatSystem:
                         knockback_force=250.0,
                         duration=0.25,
                         color=(255, 200, 90),
+                        room_id=player.current_room_id,
                     )
                 )
         elif player.stats.character_id == "mage":
@@ -127,6 +131,7 @@ class CombatSystem:
                             max_distance=skill_def.attack_range,
                             owner_is_player=True,
                             color=(110, 190, 255),
+                            room_id=player.current_room_id,
                         )
                     )
             else:
@@ -143,6 +148,7 @@ class CombatSystem:
                         knockback_force=220.0,
                         duration=0.28,
                         color=(175, 100, 255),
+                        room_id=player.current_room_id,
                     )
                 )
         else:  # Archer
@@ -161,6 +167,7 @@ class CombatSystem:
                             max_distance=skill_def.attack_range,
                             owner_is_player=True,
                             color=(130, 240, 150),
+                            room_id=player.current_room_id,
                         )
                     )
             else:
@@ -177,6 +184,7 @@ class CombatSystem:
                             max_distance=skill_def.attack_range,
                             owner_is_player=True,
                             color=(160, 255, 180),
+                            room_id=player.current_room_id,
                         )
                     )
                 player.dash_cooldown_timer = 0.0
@@ -194,7 +202,7 @@ class CombatSystem:
         """
         killed_enemies: list[Enemy] = []
 
-        # 1. Update melee arcs and check hits
+        # 1. Update melee arcs and check hits (enforcing Room Ownership isolation)
         remaining_arcs: list[MeleeAttackArc] = []
         for arc in self.melee_arcs:
             if arc.owner_is_player:
@@ -202,6 +210,8 @@ class CombatSystem:
                 arc.origin_y = player.y
                 for enemy in enemies:
                     if not enemy.alive or enemy.entity_id in arc.hit_entity_ids:
+                        continue
+                    if arc.room_id is not None and arc.room_id != enemy.room_id:
                         continue
                     if arc.contains_point(enemy.x, enemy.y, entity_radius=enemy.radius):
                         arc.hit_entity_ids.add(enemy.entity_id)
@@ -223,8 +233,14 @@ class CombatSystem:
                         if died:
                             killed_enemies.append(enemy)
             else:
+                same_room = (
+                    arc.room_id is None
+                    or player.current_room_id is None
+                    or arc.room_id == player.current_room_id
+                )
                 if (
-                    player.alive
+                    same_room
+                    and player.alive
                     and 0 not in arc.hit_entity_ids
                     and arc.contains_point(player.x, player.y, entity_radius=player.radius)
                 ):
@@ -249,7 +265,7 @@ class CombatSystem:
                 remaining_arcs.append(arc)
         self.melee_arcs = remaining_arcs
 
-        # 2. Update projectiles and check collisions
+        # 2. Update projectiles and check collisions (enforcing Room Ownership isolation)
         remaining_projectiles: list[Projectile] = []
         for proj in self.projectiles:
             if not proj.update(dt, tilemap):
@@ -259,6 +275,8 @@ class CombatSystem:
             if proj.owner_is_player:
                 for enemy in enemies:
                     if not enemy.alive:
+                        continue
+                    if proj.room_id is not None and proj.room_id != enemy.room_id:
                         continue
                     if math.hypot(enemy.x - proj.x, enemy.y - proj.y) <= (
                         enemy.radius + proj.radius
@@ -283,8 +301,16 @@ class CombatSystem:
                         hit_occurred = True
                         break
             else:
-                if player.alive and math.hypot(player.x - proj.x, player.y - proj.y) <= (
-                    player.radius + proj.radius
+                same_room = (
+                    proj.room_id is None
+                    or player.current_room_id is None
+                    or proj.room_id == player.current_room_id
+                )
+                if (
+                    same_room
+                    and player.alive
+                    and math.hypot(player.x - proj.x, player.y - proj.y)
+                    <= (player.radius + proj.radius)
                 ):
                     packet = DamagePacket(
                         amount=proj.damage,

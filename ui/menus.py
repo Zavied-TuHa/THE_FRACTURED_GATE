@@ -25,13 +25,17 @@ class PauseMenuOverlay:
     def __init__(self) -> None:
         self.options: list[str] = [
             "Resume Run",
-            "Return to Character Selection",
-            "Return to Main Menu",
+            "Quit Run to Character Selection",
+            "Quit Run to Main Menu",
         ]
         self.selected_index: int = 0
 
+    def reset(self) -> None:
+        """Reset pause menu selection to 'Resume Run' when opened."""
+        self.selected_index = 0
+
     def handle_keydown(self, key: int) -> str | None:
-        """Process pause menu navigation."""
+        """Process pause menu navigation, separating Resume from Quit flows."""
         if key == pygame.K_ESCAPE:
             return "resume"
         if key in (pygame.K_UP, pygame.K_w):
@@ -42,8 +46,8 @@ class PauseMenuOverlay:
             if self.selected_index == 0:
                 return "resume"
             if self.selected_index == 1:
-                return "character_selection"
-            return "main_menu"
+                return "pause_quit_character_selection"
+            return "pause_quit_main_menu"
         return None
 
     def render(
@@ -185,7 +189,8 @@ class EndRunScreen:
 
         summary_lines = [
             f"Run Seed: {run_manager.run_seed}",
-            f"Stage Reached: {run_manager.current_stage_index} / 3",
+            f"Stage Reached: Stage {run_manager.current_stage_index} - Substage {run_manager.current_substage_index}",
+            f"Shrines Activated: {run_manager.total_shrines_activated} / 15",
             f"Enemies Vanquished: {run_manager.enemies_slain}",
             f"Gold Earned This Run: +{run_manager.run_gold_earned} G",
             f"Blue Crystals Earned This Run: +{run_manager.run_crystals_earned} C",
@@ -194,7 +199,7 @@ class EndRunScreen:
             l_surf = body_font.render(line, False, COLOR_UI_TEXT)
             surface.blit(
                 l_surf,
-                (INTERNAL_WIDTH // 2 - l_surf.get_width() // 2, 114 + idx * 24),
+                (INTERNAL_WIDTH // 2 - l_surf.get_width() // 2, 104 + idx * 22),
             )
 
         prompt = small_font.render(

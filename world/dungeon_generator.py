@@ -6,17 +6,23 @@ from dataclasses import dataclass, field
 import math
 import random
 
-from config.balance import REQUIRED_SHRINES_PER_STAGE
+from config.balance import (
+    MIN_MANDATORY_ENEMY_ROOMS_PER_SUBSTAGE,
+    OPTIONAL_ROOM_WEIGHTS,
+    REQUIRED_SHRINES_PER_STAGE,
+    SUBSTAGE_ROOM_COUNTS,
+)
+from systems.rng_streams import SeedHierarchy
 from world.biome import BiomeConfig, get_biome_config
 from world.corridor import Corridor
 from world.dungeon_graph import DungeonGraph
-from world.room import Room, RoomType
+from world.room import Room, RoomState, RoomType
 from world.tilemap import TileMap, TileType
 
 
 @dataclass
 class GeneratedDungeon:
-    """Complete output of the procedural dungeon generator for a single stage."""
+    """Complete output of the procedural dungeon generator for a stage or substage."""
 
     seed: int
     biome: BiomeConfig
@@ -28,6 +34,19 @@ class GeneratedDungeon:
     boss_room: Room
     shrine_rooms: list[Room]
     shrine_positions: list[tuple[int, int]] = field(default_factory=list)
+    stage_index: int = 1
+    substage_index: int = 1
+    is_boss_arena: bool = False
+    mandatory_path_room_ids: list[int] = field(default_factory=list)
+
+    @property
+    def mandatory_enemy_rooms(self) -> list[Room]:
+        """Return the mandatory Enemy rooms along the required path from Entrance to Shrine."""
+        return [
+            r
+            for r in self.rooms
+            if r.is_mandatory and r.room_type.is_enemy_room
+        ]
 
     def get_room_by_id(self, room_id: int) -> Room:
         """Retrieve a room by its integer ID."""
@@ -51,7 +70,7 @@ class DungeonGenerator:
         self.biome: BiomeConfig = get_biome_config(biome_id)
 
     def generate(self, seed: int) -> GeneratedDungeon:
-        """Generate a valid, connected procedural dungeon deterministically from seed."""
+        """Legacy single-stage generator preserved for full backward compatibility."""
         rng = random.Random(seed)
         target_rooms = rng.randint(self.biome.min_rooms, self.biome.max_rooms)
         target_rooms = max(target_rooms, 2 + REQUIRED_SHRINES_PER_STAGE + 2)
@@ -78,7 +97,9 @@ class DungeonGenerator:
         )
 
         # Assign room types (Entrance, Boss, 3 Shrines, Elite, Mini-Boss, Treasure, Normal)
-        shrine_rooms = self._assign_room_types(rng, rooms, graph, entrance_room, boss_room)
+        shrine_rooms = self._assign_room_types(
+            rng, rooms, graph, entrance_room, boss_room
+        )
 
         # Carve rooms and corridors onto TileMap
         corridors = self._build_corridors(rng, graph)
@@ -87,6 +108,9 @@ class DungeonGenerator:
 
         # Ensure 100% tile-level walkability from entrance center to all room centers
         self._ensure_tile_connectivity(tilemap, rooms, corridors, entrance_room)
+
+        # Record room perimeter door tiles for all rooms
+        self._populate_room_door_tiles(tilemap, rooms)
 
         # Place boss gate tiles on corridor entrances bordering the boss room
         self._place_boss_gates(tilemap, boss_room)
@@ -109,6 +133,199 @@ class DungeonGenerator:
             shrine_positions=shrine_positions,
         )
 
+    def generate_substage(
+        self,
+        run_seed: int,
+        stage_index: int = 1,
+        substage_index: int = 1,
+    ) -> GeneratedDungeon:
+        """Generate a Revision 2.0 Substage dungeon with 1 Shrine and >= 2 Mandatory Enemy rooms."""
+        seeds = SeedHierarchy(run_seed)
+        sub_rng = seeds.substage_rng(stage_index, substage_index)
+        layout_rng = seeds.layout_rng(stage_index, substage_index)
+        content_rng = seeds.room_content_rng(stage_index, substage_index)
+
+        min_r, max_r = SUBSTAGE_ROOM_COUNTS.get(substage_index, (7, 10))
+        min_required = 2 + MIN_MANDATORY_ENEMY_ROOMS_PER_SUBSTAGE + 2
+        target_rooms = max(min_required, sub_rng.randint(min_r, max_r))
+
+        rooms = self._place_rooms(layout_rng, target_rooms)
+        entrance_room = self._select_entrance_room(rooms)
+        shrine_room = max(
+            (r for r in rooms if r.room_id != entrance_room.room_id),
+            key=lambda r: DungeonGraph.room_distance(entrance_room, r),
+        )
+
+        for r in rooms:
+            r.connected_room_ids.clear()
+        graph = DungeonGraph(rooms)
+        mandatory_path = graph.build_substage_graph(
+            rng=layout_rng,
+            entrance_id=entrance_room.room_id,
+            shrine_id=shrine_room.room_id,
+            min_mandatory_enemy_rooms=MIN_MANDATORY_ENEMY_ROOMS_PER_SUBSTAGE,
+            extra_loop_chance=self.biome.extra_loop_chance,
+        )
+
+        self._assign_substage_room_types(
+            content_rng,
+            rooms,
+            entrance_room,
+            shrine_room,
+            mandatory_path,
+        )
+
+        corridors = self._build_corridors(layout_rng, graph)
+        tilemap = TileMap(self.biome.grid_width, self.biome.grid_height, self.biome)
+        self._carve_dungeon_tiles(tilemap, rooms, corridors, shrine_room)
+        self._ensure_tile_connectivity_along_edges(tilemap, graph, corridors)
+        self._populate_room_door_tiles(tilemap, rooms)
+        tilemap.build_walls_around_floors()
+
+        substage_seed = seeds.layout_rng(stage_index, substage_index).randint(1, 2**31 - 1)
+        return GeneratedDungeon(
+            seed=substage_seed,
+            biome=self.biome,
+            rooms=rooms,
+            corridors=corridors,
+            graph=graph,
+            tilemap=tilemap,
+            entrance_room=entrance_room,
+            boss_room=shrine_room,
+            shrine_rooms=[shrine_room],
+            shrine_positions=[shrine_room.center],
+            stage_index=stage_index,
+            substage_index=substage_index,
+            is_boss_arena=False,
+            mandatory_path_room_ids=mandatory_path,
+        )
+
+    def generate_boss_arena(
+        self,
+        run_seed: int,
+        stage_index: int = 1,
+    ) -> GeneratedDungeon:
+        """Generate the dedicated Stage Boss Room unlocked after activating Shrine 5."""
+        seeds = SeedHierarchy(run_seed)
+        layout_rng = seeds.layout_rng(stage_index, 99)
+
+        entrance_room = Room(
+            room_id=0,
+            x=18,
+            y=42,
+            width=10,
+            height=10,
+            room_type=RoomType.ENTRANCE,
+            cleared=True,
+            visited=True,
+            is_mandatory=True,
+            state=RoomState.COMPLETED,
+        )
+        boss_room = Room(
+            room_id=1,
+            x=38,
+            y=37,
+            width=20,
+            height=20,
+            room_type=RoomType.BOSS,
+            cleared=False,
+            visited=False,
+            is_mandatory=True,
+            state=RoomState.UNEXPLORED,
+        )
+        rooms = [entrance_room, boss_room]
+        graph = DungeonGraph(rooms)
+        graph.add_edge(entrance_room.room_id, boss_room.room_id)
+
+        corridor = Corridor(
+            corridor_id=0,
+            room_a_id=entrance_room.room_id,
+            room_b_id=boss_room.room_id,
+            start_tile=entrance_room.center,
+            end_tile=boss_room.center,
+            width=self.biome.corridor_width,
+            horizontal_first=True,
+        )
+        corridors = [corridor]
+
+        tilemap = TileMap(self.biome.grid_width, self.biome.grid_height, self.biome)
+        self._carve_dungeon_tiles(tilemap, rooms, corridors, boss_room)
+        self._populate_room_door_tiles(tilemap, rooms)
+        tilemap.build_walls_around_floors()
+
+        arena_seed = layout_rng.randint(1, 2**31 - 1)
+        return GeneratedDungeon(
+            seed=arena_seed,
+            biome=self.biome,
+            rooms=rooms,
+            corridors=corridors,
+            graph=graph,
+            tilemap=tilemap,
+            entrance_room=entrance_room,
+            boss_room=boss_room,
+            shrine_rooms=[],
+            shrine_positions=[],
+            stage_index=stage_index,
+            substage_index=5,
+            is_boss_arena=True,
+            mandatory_path_room_ids=[entrance_room.room_id, boss_room.room_id],
+        )
+
+    def _assign_substage_room_types(
+        self,
+        rng: random.Random,
+        rooms: list[Room],
+        entrance_room: Room,
+        shrine_room: Room,
+        mandatory_path: list[int],
+    ) -> None:
+        """Assign Entrance, Shrine, >= 2 Mandatory Enemy rooms, and weighted Optional rooms."""
+        mandatory_set = set(mandatory_path)
+
+        entrance_room.room_type = RoomType.ENTRANCE
+        entrance_room.is_mandatory = True
+        entrance_room.cleared = True
+        entrance_room.visited = True
+        entrance_room.state = RoomState.COMPLETED
+
+        shrine_room.room_type = RoomType.SHRINE
+        shrine_room.is_mandatory = True
+        shrine_room.state = RoomState.UNEXPLORED
+
+        # Intermediate rooms on mandatory_path are strictly Mandatory Enemy Rooms
+        for room_id in mandatory_path[1:-1]:
+            for r in rooms:
+                if r.room_id == room_id:
+                    r.room_type = RoomType.ENEMY
+                    r.is_mandatory = True
+                    r.state = RoomState.UNEXPLORED
+                    break
+
+        # Optional branch rooms distributed by configurable weights
+        categories = [
+            RoomType.ENEMY,
+            RoomType.SPECIAL,
+            RoomType.SHOP,
+            RoomType.CHEST,
+        ]
+        weights = [
+            float(OPTIONAL_ROOM_WEIGHTS.get("enemy", 0.45)),
+            float(OPTIONAL_ROOM_WEIGHTS.get("special", 0.20)),
+            float(OPTIONAL_ROOM_WEIGHTS.get("shop", 0.15)),
+            float(OPTIONAL_ROOM_WEIGHTS.get("chest", 0.20)),
+        ]
+
+        for room in rooms:
+            if room.room_id in mandatory_set:
+                continue
+            room.is_mandatory = False
+            room.room_type = rng.choices(categories, weights=weights, k=1)[0]
+            if room.room_type in (RoomType.SPECIAL, RoomType.SHOP, RoomType.CHEST):
+                room.cleared = True
+                room.state = RoomState.EXPLORING
+            else:
+                room.state = RoomState.UNEXPLORED
+
     def _place_rooms(self, rng: random.Random, target_count: int) -> list[Room]:
         """Place non-overlapping rooms within the biome grid with fallback relaxation."""
         rooms: list[Room] = []
@@ -119,7 +336,6 @@ class DungeonGenerator:
         attempts = 0
         while len(rooms) < target_count and attempts < max_attempts:
             attempts += 1
-            # Gradually relax padding if grid is tight after many attempts
             current_padding = padding if attempts < 600 else max(2, padding - 1)
             min_size = self.biome.min_room_size
             max_size = self.biome.max_room_size if attempts < 800 else min_size + 2
@@ -135,14 +351,20 @@ class DungeonGenerator:
             y = rng.randint(margin, max_y)
             candidate = Room(room_id=len(rooms), x=x, y=y, width=w, height=h)
 
-            if all(not candidate.intersects(existing, padding=current_padding) for existing in rooms):
+            if all(
+                not candidate.intersects(existing, padding=current_padding)
+                for existing in rooms
+            ):
                 rooms.append(candidate)
 
-        # Deterministic grid-slot fallback if random sampling placed fewer than minimum rooms
         if len(rooms) < target_count:
             slot_size = self.biome.min_room_size + 4
-            for gy in range(margin, self.biome.grid_height - slot_size - margin, slot_size):
-                for gx in range(margin, self.biome.grid_width - slot_size - margin, slot_size):
+            for gy in range(
+                margin, self.biome.grid_height - slot_size - margin, slot_size
+            ):
+                for gx in range(
+                    margin, self.biome.grid_width - slot_size - margin, slot_size
+                ):
                     if len(rooms) >= target_count:
                         break
                     candidate = Room(
@@ -152,7 +374,10 @@ class DungeonGenerator:
                         width=self.biome.min_room_size,
                         height=self.biome.min_room_size,
                     )
-                    if all(not candidate.intersects(existing, padding=2) for existing in rooms):
+                    if all(
+                        not candidate.intersects(existing, padding=2)
+                        for existing in rooms
+                    ):
                         rooms.append(candidate)
 
         return rooms
@@ -185,7 +410,7 @@ class DungeonGenerator:
         entrance_room: Room,
         boss_room: Room,
     ) -> list[Room]:
-        """Assign Entrance, Boss, 3 Shrines, and combat/special rooms."""
+        """Assign Entrance, Boss, 3 Shrines, and combat/special rooms (legacy single-map mode)."""
         entrance_room.room_type = RoomType.ENTRANCE
         entrance_room.cleared = True
         entrance_room.visited = True
@@ -199,13 +424,11 @@ class DungeonGenerator:
         ]
         rng.shuffle(remaining)
 
-        # Sort remaining by distance from entrance so shrines are well distributed
         distances = graph.bfs_distances(entrance_room.room_id)
         remaining.sort(key=lambda r: distances.get(r.room_id, 1), reverse=True)
 
         shrine_rooms: list[Room] = []
         if len(remaining) >= REQUIRED_SHRINES_PER_STAGE:
-            # Spread 3 shrines across distant, mid, and near bands
             step = max(1, len(remaining) // REQUIRED_SHRINES_PER_STAGE)
             chosen_indices: list[int] = []
             for i in range(REQUIRED_SHRINES_PER_STAGE):
@@ -224,11 +447,7 @@ class DungeonGenerator:
                 room.room_type = RoomType.SHRINE
                 shrine_rooms.append(room)
 
-        other_rooms = [
-            r
-            for r in remaining
-            if r.room_type != RoomType.SHRINE
-        ]
+        other_rooms = [r for r in remaining if r.room_type != RoomType.SHRINE]
         rng.shuffle(other_rooms)
 
         special_cycle = [
@@ -292,7 +511,9 @@ class DungeonGenerator:
         entrance_room: Room,
     ) -> None:
         """Verify tile walkability to every room center and carve direct bridges if needed."""
-        reachable = tilemap.reachable_tiles_from(entrance_room.center, ignore_boss_lock=True)
+        reachable = tilemap.reachable_tiles_from(
+            entrance_room.center, ignore_boss_lock=True
+        )
         for room in rooms:
             if room.center not in reachable:
                 bridge = Corridor(
@@ -313,10 +534,56 @@ class DungeonGenerator:
                     entrance_room.center, ignore_boss_lock=True
                 )
 
+    def _ensure_tile_connectivity_along_edges(
+        self,
+        tilemap: TileMap,
+        graph: DungeonGraph,
+        corridors: list[Corridor],
+    ) -> None:
+        """Ensure every connected graph edge has a walkable tile path without bypassing backbone."""
+        for u_id, v_id in graph.edges:
+            room_u = graph.rooms_by_id[u_id]
+            room_v = graph.rooms_by_id[v_id]
+            reachable = tilemap.reachable_tiles_from(
+                room_u.center, ignore_boss_lock=True
+            )
+            if room_v.center not in reachable:
+                bridge = Corridor(
+                    corridor_id=len(corridors),
+                    room_a_id=u_id,
+                    room_b_id=v_id,
+                    start_tile=room_u.center,
+                    end_tile=room_v.center,
+                    width=self.biome.corridor_width,
+                    horizontal_first=True,
+                )
+                corridors.append(bridge)
+                for tx, ty in bridge.tiles:
+                    if 1 <= tx < tilemap.width - 1 and 1 <= ty < tilemap.height - 1:
+                        if tilemap.get_tile(tx, ty) == TileType.VOID:
+                            tilemap.set_tile(tx, ty, TileType.CORRIDOR)
+
+    def _populate_room_door_tiles(
+        self,
+        tilemap: TileMap,
+        rooms: list[Room],
+    ) -> None:
+        """Record the 1-tile perimeter corridor coordinates bordering each room for Phase 2.4 door locking."""
+        for room in rooms:
+            doors: list[tuple[int, int]] = []
+            for tx in range(room.x - 1, room.right + 1):
+                for ty in (room.y - 1, room.bottom):
+                    if tilemap.get_tile(tx, ty) == TileType.CORRIDOR:
+                        doors.append((tx, ty))
+            for ty in range(room.y, room.bottom):
+                for tx in (room.x - 1, room.right):
+                    if tilemap.get_tile(tx, ty) == TileType.CORRIDOR:
+                        doors.append((tx, ty))
+            room.door_tiles = doors
+
     def _place_boss_gates(self, tilemap: TileMap, boss_room: Room) -> None:
         """Place locked boss gate tiles along corridor tiles immediately outside boss_room."""
         gate_coords: list[tuple[int, int]] = []
-        # Check the 1-tile perimeter around boss_room for CORRIDOR tiles
         for tx in range(boss_room.x - 1, boss_room.right + 1):
             for ty in (boss_room.y - 1, boss_room.bottom):
                 if tilemap.get_tile(tx, ty) == TileType.CORRIDOR:
