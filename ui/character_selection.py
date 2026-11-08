@@ -119,10 +119,17 @@ class CharacterSelectionScreen:
             pygame.draw.rect(surface, bg_col, rect)
             pygame.draw.rect(surface, border_col, rect, 2 if selected else 1)
 
-            # Character sprite preview box
-            avatar_rect = pygame.Rect(cx + card_w // 2 - 12, card_y + 12, 24, 24)
-            pygame.draw.rect(surface, stats.color if unlocked else (75, 70, 85), avatar_rect)
-            pygame.draw.rect(surface, COLOR_UI_TEXT, avatar_rect, 1)
+            # Character sprite preview box (32x32 Chibi sprite for Warrior)
+            if char_id == "warrior":
+                from systems.asset_manager import AssetManager
+
+                ctrl = AssetManager.get_instance().create_character_animation_controller("warrior")
+                frame = ctrl.get_current_frame()
+                surface.blit(frame, (cx + card_w // 2 - 16, card_y + 8))
+            else:
+                avatar_rect = pygame.Rect(cx + card_w // 2 - 12, card_y + 12, 24, 24)
+                pygame.draw.rect(surface, stats.color if unlocked else (75, 70, 85), avatar_rect)
+                pygame.draw.rect(surface, COLOR_UI_TEXT, avatar_rect, 1)
 
             name_surf = body_font.render(stats.name, False, COLOR_UI_TEXT)
             surface.blit(name_surf, (cx + card_w // 2 - name_surf.get_width() // 2, card_y + 42))

@@ -99,6 +99,11 @@ class Enemy:
         self.knockback_vx: float = 0.0
         self.knockback_vy: float = 0.0
 
+    @property
+    def foot_y(self) -> float:
+        """Return world Y coordinate of the enemy's feet for Y-sorting."""
+        return self.y + float(self.half_size)
+
     def take_damage(self, packet: DamagePacket) -> bool:
         """Apply damage and knockback to this enemy. Return True if this hit killed it."""
         if not self.alive:

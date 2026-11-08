@@ -312,10 +312,11 @@ class FracturedGateGame:
                     crystals=dead_enemy.crystal_drop,
                 )
 
-        # Check player death
+        # Check player death (wait for highest-priority DEATH animation to finish)
         if not player.alive:
-            self.state_manager.change_state(GameState.GAME_OVER)
-            return
+            if player.anim_controller.finished:
+                self.state_manager.change_state(GameState.GAME_OVER)
+                return
 
         self.camera.update(player.x, player.y, dt)
 
@@ -388,7 +389,7 @@ class FracturedGateGame:
             pygame.display.flip()
 
     def _render_gameplay_world(self) -> None:
-        """Render tilemap, shrines, portal, enemies, player, combat effects, and lighting."""
+        """Render layered tilemap, Y-sorted entities by foot_y, foreground tiles, and lighting."""
         self.internal_surface.fill(COLOR_BG_VOID)
         dungeon = self.run_manager.dungeon
         player = self.run_manager.player
@@ -397,11 +398,8 @@ class FracturedGateGame:
             return
 
         cam_offset = self.camera.offset
+        # 1. Ground, Decoration, and Wall Base layers
         dungeon.tilemap.render(self.internal_surface, cam_offset)
-
-        for shrine in shrine_sys.shrines:
-            guarded = shrine_sys.is_shrine_guarded(shrine, self.run_manager.enemies)
-            shrine.render(self.internal_surface, cam_offset, guarded=guarded)
 
         if self.run_manager.portal is not None:
             wx, wy = self.run_manager.portal.world_pos
@@ -410,11 +408,30 @@ class FracturedGateGame:
             pygame.draw.circle(self.internal_surface, COLOR_PORTAL, (sx, sy), 10)
             pygame.draw.circle(self.internal_surface, (235, 210, 255), (sx, sy), 6, 2)
 
+        # 2. Y-Sorted Entities based on foot_y (Shrines, Enemies/Boss, Player)
+        renderables: list[tuple[float, object]] = []
+        for shrine in shrine_sys.shrines:
+            renderables.append((shrine.foot_y, shrine))
         for enemy in self.run_manager.enemies:
-            enemy.render(self.internal_surface, cam_offset)
+            if enemy.alive:
+                renderables.append((enemy.foot_y, enemy))
+        renderables.append((player.foot_y, player))
 
-        player.render(self.internal_surface, cam_offset)
+        renderables.sort(key=lambda item: item[0])
 
+        for _, obj in renderables:
+            if obj is player:
+                player.render(self.internal_surface, cam_offset)
+            elif hasattr(obj, "shrine_id"):
+                guarded = shrine_sys.is_shrine_guarded(obj, self.run_manager.enemies)  # type: ignore[arg-type]
+                obj.render(self.internal_surface, cam_offset, guarded=guarded)  # type: ignore[attr-defined]
+            else:
+                obj.render(self.internal_surface, cam_offset)  # type: ignore[attr-defined]
+
+        # 3. Foreground Tile Layer (upper wall crowns overlapping entities behind southern walls)
+        dungeon.tilemap.render_foreground(self.internal_surface, cam_offset)
+
+        # 4. Combat slashes, projectiles, floating damage numbers, and lighting vignette
         self.run_manager.combat_system.render(
             self.internal_surface, cam_offset, self.small_font
         )

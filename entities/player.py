@@ -1,4 +1,4 @@
-"""Controllable player entity driven by CharacterStats."""
+"""Controllable player entity with Chibi 32x32 spritesheet and AnimationController."""
 
 from __future__ import annotations
 
@@ -7,13 +7,15 @@ import pygame
 
 from characters.character_data import CharacterStats
 from combat.damage import DamagePacket
-from config.settings import COLOR_PLAYER_DASH, TILE_SIZE
+from config.settings import SPRITE_SIZE_CHARACTER, TILE_SIZE
+from systems.animation import AnimationController, AnimationState, Direction
+from systems.asset_manager import AssetManager
 from systems.collision import move_with_tile_collision
 from world.tilemap import TileMap
 
 
 class Player:
-    """Top-down controllable player character with combat, skills, and dodge-dash."""
+    """Top-down controllable player character with 4-direction 8-frame animation."""
 
     def __init__(
         self,
@@ -30,11 +32,13 @@ class Player:
         self.hp: int = stats.max_hp
         self.alive: bool = True
 
+        # Collision dimensions (preserved strictly independent of 32x32 sprite size)
         self.half_size: int = 6
         self.radius: float = 6.5
+        self.visual_size: tuple[int, int] = SPRITE_SIZE_CHARACTER
 
-        self.facing_x: float = 1.0
-        self.facing_y: float = 0.0
+        self.facing_x: float = 0.0
+        self.facing_y: float = 1.0
 
         self.skill_1_unlocked: bool = skill_1_unlocked
         self.skill_2_unlocked: bool = skill_2_unlocked
@@ -53,10 +57,23 @@ class Player:
         self.knockback_vx: float = 0.0
         self.knockback_vy: float = 0.0
 
+        # AnimationController & combat event synchronization log
+        self.anim_controller: AnimationController = (
+            AssetManager.get_instance().create_character_animation_controller(
+                stats.character_id
+            )
+        )
+        self.last_animation_events: list[str] = []
+
     @property
     def tile_pos(self) -> tuple[int, int]:
         """Return the current (tx, ty) tile coordinates of the player."""
         return (int(self.x // TILE_SIZE), int(self.y // TILE_SIZE))
+
+    @property
+    def foot_y(self) -> float:
+        """Return world Y coordinate of the player's feet for Y-sorting."""
+        return self.y + float(self.half_size)
 
     @property
     def is_invulnerable(self) -> bool:
@@ -71,6 +88,7 @@ class Player:
         if dist > 1e-4:
             self.facing_x = dx / dist
             self.facing_y = dy / dist
+            self.anim_controller.set_direction_from_vector(self.facing_x, self.facing_y)
 
     def try_dash(self, move_dx: float, move_dy: float) -> bool:
         """Initiate a dodge-dash with invulnerability frames if off cooldown."""
@@ -88,6 +106,8 @@ class Player:
         self.dash_active_timer = self.stats.dash_duration
         self.dash_cooldown_timer = self.stats.dash_cooldown
         self.invulnerable_timer = max(self.invulnerable_timer, self.stats.dash_duration + 0.08)
+        self.anim_controller.set_direction_from_vector(self.dash_dir_x, self.dash_dir_y)
+        self.anim_controller.play(AnimationState.WALK)
         return True
 
     def can_basic_attack(self) -> bool:
@@ -95,10 +115,15 @@ class Player:
         return self.alive and self.attack_cooldown_timer <= 0.0
 
     def trigger_basic_attack(self) -> bool:
-        """Consume basic attack cooldown; return True if triggered."""
+        """Consume basic attack cooldown and trigger 8-frame Attack animation."""
         if not self.can_basic_attack():
             return False
         self.attack_cooldown_timer = self.stats.attack_cooldown
+        self.anim_controller.play(
+            AnimationState.ATTACK,
+            direction=Direction.from_vector(self.facing_x, self.facing_y),
+            restart_if_same=True,
+        )
         return True
 
     def can_use_skill(self, slot: int) -> bool:
@@ -112,13 +137,23 @@ class Player:
         return False
 
     def trigger_skill(self, slot: int) -> bool:
-        """Start cooldown for skill slot 1 or 2 if available."""
+        """Start cooldown and play Skill 1 or Skill 2 animation."""
         if not self.can_use_skill(slot):
             return False
         if slot == 1:
             self.skill_1_cooldown_timer = self.stats.skill_1.cooldown
+            self.anim_controller.play(
+                AnimationState.SKILL_1,
+                direction=Direction.from_vector(self.facing_x, self.facing_y),
+                restart_if_same=True,
+            )
         else:
             self.skill_2_cooldown_timer = self.stats.skill_2.cooldown
+            self.anim_controller.play(
+                AnimationState.SKILL_2,
+                direction=Direction.from_vector(self.facing_x, self.facing_y),
+                restart_if_same=True,
+            )
         return True
 
     def take_damage(self, packet: DamagePacket) -> bool:
@@ -135,6 +170,9 @@ class Player:
 
         if self.hp <= 0:
             self.alive = False
+            self.anim_controller.play(AnimationState.DEATH, restart_if_same=True)
+        else:
+            self.anim_controller.play(AnimationState.HURT, restart_if_same=True)
         return True
 
     def heal(self, amount: int) -> None:
@@ -149,7 +187,7 @@ class Player:
         move_dy: float,
         tilemap: TileMap,
     ) -> None:
-        """Update timers, dash velocity, movement input, and wall collisions."""
+        """Update timers, dash velocity, movement input, wall collisions, and animations."""
         if self.attack_cooldown_timer > 0.0:
             self.attack_cooldown_timer = max(0.0, self.attack_cooldown_timer - dt)
         if self.skill_1_cooldown_timer > 0.0:
@@ -164,21 +202,34 @@ class Player:
             self.hit_flash_timer = max(0.0, self.hit_flash_timer - dt)
 
         if not self.alive:
+            self.anim_controller.play(AnimationState.DEATH)
+            self.last_animation_events = self.anim_controller.update(dt)
             return
 
+        is_moving = False
         if self.dash_active_timer > 0.0:
             self.dash_active_timer = max(0.0, self.dash_active_timer - dt)
             vx = self.dash_dir_x * self.stats.dash_speed
             vy = self.dash_dir_y * self.stats.dash_speed
+            is_moving = True
         else:
             mag = math.hypot(move_dx, move_dy)
             if mag > 1e-4:
                 nx = move_dx / mag
                 ny = move_dy / mag
+                is_moving = True
             else:
                 nx, ny = 0.0, 0.0
             vx = nx * self.stats.move_speed + self.knockback_vx
             vy = ny * self.stats.move_speed + self.knockback_vy
+
+        # Transition between WALK and IDLE when not locked in a higher-priority one-shot clip
+        if is_moving:
+            self.anim_controller.play(AnimationState.WALK)
+        else:
+            self.anim_controller.play(AnimationState.IDLE)
+
+        self.last_animation_events = self.anim_controller.update(dt)
 
         # Exponential decay of knockback velocity
         decay = max(0.0, 1.0 - 10.0 * dt)
@@ -196,39 +247,21 @@ class Player:
         )
 
     def render(self, surface: pygame.Surface, camera_offset: tuple[int, int]) -> None:
-        """Render the pixel-art knight/character sprite and aim indicator."""
+        """Render the 32x32 Chibi Pixel-Art sprite anchored by foot_y."""
         cam_x, cam_y = camera_offset
         sx = int(round(self.x - cam_x))
-        sy = int(round(self.y - cam_y))
+        foot_screen_y = int(round(self.foot_y - cam_y))
 
-        # Shadow
+        # Ground shadow beneath feet
         pygame.draw.ellipse(
             surface,
-            (12, 10, 16),
-            pygame.Rect(sx - 6, sy + 3, 12, 5),
+            (10, 8, 15),
+            pygame.Rect(sx - 7, foot_screen_y - 3, 14, 5),
         )
 
-        body_color = self.stats.color
-        if self.hit_flash_timer > 0.0:
-            body_color = (255, 255, 255)
-        elif self.dash_active_timer > 0.0:
-            body_color = COLOR_PLAYER_DASH
-
-        body_rect = pygame.Rect(
-            sx - self.half_size,
-            sy - self.half_size,
-            self.half_size * 2,
-            self.half_size * 2,
-        )
-        pygame.draw.rect(surface, body_color, body_rect)
-        pygame.draw.rect(surface, (28, 22, 34), body_rect, 1)
-
-        # Visor / eyes toward facing direction
-        eye_x = sx + int(round(self.facing_x * 3))
-        eye_y = sy - 1 + int(round(self.facing_y * 2))
-        pygame.draw.rect(surface, (30, 26, 40), pygame.Rect(eye_x - 2, eye_y - 1, 4, 2))
-
-        # Directional weapon tip indicator
-        wx = sx + int(round(self.facing_x * 9))
-        wy = sy + int(round(self.facing_y * 9))
-        pygame.draw.line(surface, (220, 220, 235), (sx, sy), (wx, wy), 2)
+        frame_surf = self.anim_controller.get_current_frame()
+        fw, fh = frame_surf.get_size()
+        # Anchor 32x32 sprite so the chibi boots at y=30 align with foot_screen_y
+        draw_x = sx - fw // 2
+        draw_y = foot_screen_y - (fh - 2)
+        surface.blit(frame_surf, (draw_x, draw_y))

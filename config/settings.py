@@ -21,7 +21,7 @@ SAVE_FILE_PATH: Path = SAVE_DIR / "profile.save.json"
 SAVE_BACKUP_PATH: Path = SAVE_DIR / "profile.save.bak"
 
 GAME_TITLE: str = "THE FRACTURED GATE"
-GAME_VERSION: str = "0.1.0-phase1"
+GAME_VERSION: str = "0.2.1-art-lock"
 
 # Rendering & Display
 INTERNAL_WIDTH: int = 640
@@ -35,6 +35,16 @@ WINDOW_RESOLUTION: tuple[int, int] = (WINDOW_WIDTH, WINDOW_HEIGHT)
 
 TARGET_FPS: int = 60
 TILE_SIZE: int = 16
+
+# Official Art Direction Lock – Visual Sprite Dimensions (Independent of Collision)
+SPRITE_SIZE_CHARACTER: tuple[int, int] = (32, 32)
+SPRITE_SIZE_SMALL_ENEMY: tuple[int, int] = (32, 32)
+SPRITE_SIZE_ELITE_ENEMY: tuple[int, int] = (48, 48)
+SPRITE_SIZE_MINI_BOSS: tuple[int, int] = (64, 64)
+SPRITE_SIZE_BOSS: tuple[int, int] = (64, 64)
+SPRITE_SIZE_WEAPON: tuple[int, int] = (16, 16)
+SPRITE_SIZE_ITEM: tuple[int, int] = (16, 16)
+STANDARD_ANIMATION_FRAMES: int = 8
 
 # Dark Fantasy Medieval Color Palette (RGB / RGBA)
 COLOR_BG_VOID: tuple[int, int, int] = (10, 8, 14)

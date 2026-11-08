@@ -35,6 +35,11 @@ class Shrine:
             self.tile_y * TILE_SIZE + TILE_SIZE * 0.5,
         )
 
+    @property
+    def foot_y(self) -> float:
+        """Return world Y coordinate of the shrine base for Y-sorting."""
+        return self.world_pos[1] + 8.0
+
     def is_player_in_range(self, player_x: float, player_y: float) -> bool:
         """Return True if the player is close enough to interact with this shrine."""
         wx, wy = self.world_pos
